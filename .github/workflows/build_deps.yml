@@ -28,6 +28,14 @@ jobs:
     env:
       date: ""
     steps:
+      - name: Debug Inputs (Build Deps Start)
+        run: |
+          echo "DEPS JOB: Received cache-key: ${{ inputs.cache-key }}"
+          echo "DEPS JOB: Received cache-path: ${{ inputs.cache-path }}"
+          echo "DEPS JOB: Received os: ${{ inputs.os }}"
+          echo "DEPS JOB: Received arch: ${{ inputs.arch }}"
+        shell: bash
+
       # Setup the environment
       - name: Checkout
         uses: actions/checkout@v4
@@ -90,6 +98,15 @@ jobs:
           sudo rm -rf /Library/Frameworks/Python.framework/
           brew install --force python3 && brew unlink python3 && brew unlink python3 && brew link --overwrite python3
 
+      - name: Debug Cache Path (Before Mac Build)
+        if: startsWith(inputs.os, 'macos-')
+        run: |
+          echo "DEPS JOB: Expected cache directory (before build): ${{ inputs.cache-path }}"
+          echo "DEPS JOB: Listing content of parent: ${{ github.workspace }}/deps/build_${{ inputs.arch }}/"
+          ls -la "${{ github.workspace }}/deps/build_${{ inputs.arch }}/"
+        shell: bash
+        continue-on-error: true # In case the directory doesn't exist yet
+
       - name: Build on Mac ${{ inputs.arch }}
         if: startsWith(inputs.os, 'macos-')
         working-directory: ${{ github.workspace }}
@@ -105,10 +122,24 @@ jobs:
           else
             OPENSSL_ARCH_FLAG="darwin64-x86_64-cc"
           fi
-
-          cmake ../ -DDESTDIR="${{ github.workspace }}/deps/build_${{ inputs.arch }}/BambuStudio_dep_${{ inputs.arch }}" -DOPENSSL_ARCH="$OPENSSL_ARCH_FLAG"
-          make -j4 install
+          
+          # If DESTDIR isn't used by an install target, it might not be essential,
+          # but it doesn't hurt if subprojects expect it for their own install steps.
+          # The crucial part is that artifacts end up in inputs.cache-path.
+          cmake ../ -DDESTDIR="${{ inputs.cache-path }}" -DOPENSSL_ARCH="$OPENSSL_ARCH_FLAG"
+          make -j4
           brew install zstd
+
+      - name: Debug Cache Path (After Mac Build)
+        if: startsWith(inputs.os, 'macos-')
+        run: |
+          echo "DEPS JOB: Expected cache directory (after build): ${{ inputs.cache-path }}"
+          echo "DEPS JOB: Listing content of cache directory:"
+          ls -la "${{ inputs.cache-path }}"
+          echo "DEPS JOB: Listing content of parent: ${{ github.workspace }}/deps/build_${{ inputs.arch }}/"
+          ls -la "${{ github.workspace }}/deps/build_${{ inputs.arch }}/"
+        shell: bash
+        continue-on-error: true # To ensure this step runs even if ls fails
 
       - name: pack deps on Macos
         if: startsWith(inputs.os, 'macos-')
