@@ -19,10 +19,6 @@ on:
       build-deps-only:
         required: false
         type: boolean
-      target_arch:
-        required: false
-        type: string
-        default: "all"
 
 jobs:
   build_deps:
@@ -152,5 +148,4 @@ jobs:
       cache-path: ${{ inputs.cache-path }}
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
-      target_arch: ${{ inputs.target_arch }}
     secrets: inherit

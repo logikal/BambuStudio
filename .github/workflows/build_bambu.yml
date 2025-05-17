@@ -13,10 +13,6 @@ on:
       arch:
         required: false
         type: string
-      target_arch:
-        required: false
-        type: string
-        default: "all"
 
 jobs:
   build_bambu:
