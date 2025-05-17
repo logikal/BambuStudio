@@ -32,7 +32,7 @@ on:
         type: boolean
         default: false
       target_os:
-        description: "Specify target OS (all, ubuntu-20.04, ubuntu-24.04, windows-latest, macos-13, macos-latest)"
+        description: "Specify target OS (all, ubuntu-20.04, ubuntu-24.04, windows-latest, macos-13, macos-14)"
         type: choice
         options:
           - all
@@ -40,7 +40,7 @@ on:
           - ubuntu-24.04
           - windows-latest
           - macos-13
-          - macos-latest
+          - macos-14
         default: "all"
       target_mac_arch:
         description: "Specify target architecture for macOS (all, x86_64, arm64). Default is all."
