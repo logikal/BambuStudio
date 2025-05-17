@@ -107,7 +107,7 @@ jobs:
           fi
 
           cmake ../ -DDESTDIR="${{ github.workspace }}/deps/build_${{ inputs.arch }}/BambuStudio_dep_${{ inputs.arch }}" -DOPENSSL_ARCH="$OPENSSL_ARCH_FLAG"
-          make -j4
+          make -j4 install
           brew install zstd
 
       - name: pack deps on Macos

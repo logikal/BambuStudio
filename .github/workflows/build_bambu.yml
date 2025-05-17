@@ -24,6 +24,14 @@ jobs:
       ver_pure: ""
 
     steps:
+      - name: Debug Inputs
+        run: |
+          echo "Received cache-key: ${{ inputs.cache-key }}"
+          echo "Received cache-path: ${{ inputs.cache-path }}"
+          echo "Received os: ${{ inputs.os }}"
+          echo "Received arch: ${{ inputs.arch }}"
+        shell: bash
+
       - name: Checkout
         uses: actions/checkout@v4
         with:
