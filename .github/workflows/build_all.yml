@@ -68,7 +68,7 @@ jobs:
             arch: "x64"
           - os: macos-13
             arch: "x86_64"
-          - os: macos-latest
+          - os: macos-14
             arch: "arm64"
     uses: ./.github/workflows/build_check_cache.yml
     with:

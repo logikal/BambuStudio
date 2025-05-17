@@ -54,6 +54,15 @@ jobs:
         run: echo "date=$(Get-Date -Format 'yyyyMMdd')" | Out-File -Append -FilePath $env:GITHUB_ENV -Encoding utf8
         shell: pwsh
 
+      - name: Select Xcode 15.2 on macOS 14 (ARM)
+        if: inputs.os == 'macos-14' && inputs.arch == 'arm64'
+        run: |
+          echo "Available Xcodes:"
+          ls /Applications | grep Xcode
+          sudo xcode-select -s /Applications/Xcode_15.2.app/Contents/Developer
+          xcodebuild -version
+        shell: bash
+
       # Build Dependencies
       - name: Build on Windows
         if: inputs.os == 'windows-latest'
