@@ -31,7 +31,18 @@ on:
         description: "Only build dependencies (bypasses caching)"
         type: boolean
         default: false
-      target_arch:
+      target_os:
+        description: "Specify target OS (all, ubuntu-20.04, ubuntu-24.04, windows-latest, macos-13, macos-latest)"
+        type: choice
+        options:
+          - all
+          - ubuntu-20.04
+          - ubuntu-24.04
+          - windows-latest
+          - macos-13
+          - macos-latest
+        default: "all"
+      target_mac_arch:
         description: "Specify target architecture for macOS (all, x86_64, arm64). Default is all."
         type: choice
         options:
@@ -45,23 +56,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build_all:
-    name: Build All
+  build_job:
+    name: Build Matrix Target
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-22.04
           - os: ubuntu-24.04
+            arch: "x86_64"
           - os: windows-latest
+            arch: "x64"
           - os: macos-13
-            arch: x86_64
+            arch: "x86_64"
           - os: macos-latest
-            arch: arm64
+            arch: "arm64"
     uses: ./.github/workflows/build_check_cache.yml
     with:
       os: ${{ matrix.os }}
       arch: ${{ matrix.arch }}
       build-deps-only: ${{ inputs.build-deps-only || false }}
-      target_arch: ${{ inputs.target_arch }}
+      target_os: ${{ inputs.target_os }}
+      target_mac_arch: ${{ inputs.target_mac_arch }}
     secrets: inherit

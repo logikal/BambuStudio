@@ -3,16 +3,20 @@ name: Check Cache
 on:
   workflow_call:
     inputs:
-      os:
+      os: # This is the os from the matrix
         required: true
         type: string
-      arch:
+      arch: # This is the arch from the matrix
         required: false
         type: string
       build-deps-only:
         required: false
         type: boolean
-      target_arch:
+      target_os: # New input for filtering
+        required: false
+        type: string
+        default: "all"
+      target_mac_arch: # New input for macOS arch filtering
         required: false
         type: string
         default: "all"
@@ -22,9 +26,11 @@ jobs:
     name: Check Cache
     runs-on: ${{ inputs.os }}
     if: |
-      (!startsWith(inputs.os, 'macos-')) ||
-      (inputs.target_arch == 'all') ||
-      (startsWith(inputs.os, 'macos-') && inputs.target_arch == inputs.arch)
+      (inputs.target_os == 'all' || inputs.target_os == inputs.os) &&
+      (
+        !startsWith(inputs.os, 'macos-') ||
+        (inputs.target_mac_arch == 'all' || inputs.target_mac_arch == inputs.arch)
+      )
     outputs:
       cache-key: ${{ steps.set_outputs.outputs.cache-key }}
       cache-path: ${{ steps.set_outputs.outputs.cache-path }}
@@ -59,10 +65,15 @@ jobs:
   build_deps: # call next step
     name: Build Deps
     needs: [check_cache]
+    # This job should only run if check_cache decided to run and produce outputs.
+    # If check_cache is skipped due to its 'if' condition, its outputs might not be available.
+    # So, we use the same condition here. An alternative is to rely on needs.check_cache.result != 'skipped'
     if: |
-      (!startsWith(inputs.os, 'macos-')) ||
-      (inputs.target_arch == 'all') ||
-      (startsWith(inputs.os, 'macos-') && inputs.target_arch == inputs.arch)
+      (inputs.target_os == 'all' || inputs.target_os == inputs.os) &&
+      (
+        !startsWith(inputs.os, 'macos-') ||
+        (inputs.target_mac_arch == 'all' || inputs.target_mac_arch == inputs.arch)
+      )
     uses: ./.github/workflows/build_deps.yml
     with:
       cache-key: ${{ needs.check_cache.outputs.cache-key }}
@@ -71,5 +82,6 @@ jobs:
       os: ${{ inputs.os }}
       arch: ${{ inputs.arch }}
       build-deps-only: ${{ inputs.build-deps-only }}
-      target_arch: ${{ inputs.target_arch }} # Pass target_arch through
+      # target_os and target_mac_arch are NOT passed to build_deps.yml
+      # build_deps.yml and build_bambu.yml will run unconditionally if called.
     secrets: inherit
