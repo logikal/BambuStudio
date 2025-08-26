@@ -899,8 +899,7 @@ void UnsavedChangesDialog::build(Preset::Type type, PresetCollection *dependent_
         dependent_presets = nullptr;
     }
 
-    if (params || (dependent_presets &&
-        ((dependent_presets->type() != Preset::Type::TYPE_FILAMENT && dependent_presets->type() != Preset::Type::TYPE_PRINTER) || !dependent_presets->find_preset(new_selected_preset)))) {
+    if (params || (dependent_presets && dependent_presets->type() != Preset::Type::TYPE_PRINTER)) {
         m_panel_tab = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(UNSAVE_CHANGE_DIALOG_SCROLL_WINDOW_SIZE.x, -1), wxTAB_TRAVERSAL);
         m_panel_tab->SetBackgroundColour(GREY200);
         wxBoxSizer *m_sizer_tab = new wxBoxSizer(wxVERTICAL);
