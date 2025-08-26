@@ -1500,8 +1500,8 @@ void UnsavedChangesDialog::update(Preset::Type type, PresetCollection* dependent
     if (dependent_presets) {
         if (dependent_presets->type() == Preset::Type::TYPE_PRINTER) {
             // For printer presets (no change list shown)
-            action_msg = format_wxstr(_L("You have unsaved changes to \"%1%\". "), dependent_presets->get_edited_preset().name);
-            action_msg += format_wxstr(_L("Do you want to save those changes before switching to \"%2%\"?"), new_selected_preset);
+            action_msg = format_wxstr(_L("You have unsaved changes to \"%1%\". Do you want to save those changes before switching to \"%2%\"?"),
+                                    dependent_presets->get_edited_preset().name, new_selected_preset);
         } else {
             // For filament and print presets (change list shown)
             action_msg = format_wxstr(_L("You have unsaved modifications to the current preset \"%1%\". "), dependent_presets->get_edited_preset().name);
