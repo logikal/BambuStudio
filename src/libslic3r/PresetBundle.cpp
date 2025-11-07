@@ -2782,6 +2782,42 @@ DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optio
         std::vector<int>& filament_self_indice = out.option<ConfigOptionInts>("filament_self_index", true)->values;
         int index_size = out.option<ConfigOptionStrings>("filament_extruder_variant")->size();
         filament_self_indice.resize(index_size, 1);
+
+        // BBS: Apply AMS pressure advance override for single filament
+        if (!filament_ams_list.empty() && preset) {
+            ConfigOptionFloats* pressure_advance_opt = out.option<ConfigOptionFloats>("pressure_advance", true);
+            ConfigOptionBools* enable_pa_opt = out.option<ConfigOptionBools>("enable_pressure_advance", true);
+
+            // Find matching AMS entry for this filament
+            for (const auto& ams_entry : filament_ams_list) {
+                const DynamicPrintConfig& ams_config = ams_entry.second;
+                std::string ams_filament_id = ams_config.opt_string("filament_id", 0u);
+
+                if (preset->filament_id == ams_filament_id) {
+                    float ams_k = ams_config.opt_float("ams_pressure_advance_k", 0u);
+                    int ams_cali_idx = ams_config.opt_int("ams_cali_idx", 0u);
+
+                    // Use AMS k-value if calibrated (k > 0 or cali_idx != -1)
+                    if (ams_k > 0.0f || ams_cali_idx != -1) {
+                        BOOST_LOG_TRIVIAL(info) << boost::format("Applying AMS pressure advance override for single filament: k=%1%")
+                            % ams_k;
+                        if (pressure_advance_opt->values.empty()) {
+                            pressure_advance_opt->values.push_back(ams_k);
+                        } else {
+                            pressure_advance_opt->values[0] = ams_k;
+                        }
+                        if (ams_k > 0.0f) {
+                            if (enable_pa_opt->values.empty()) {
+                                enable_pa_opt->values.push_back(true);
+                            } else {
+                                enable_pa_opt->values[0] = true;
+                            }
+                        }
+                    }
+                    break;
+                }
+            }
+        }
     } else {
         // Retrieve filament presets and build a single config object for them.
         // First collect the filament configurations based on the user selection of this->filament_presets.
@@ -2901,6 +2937,55 @@ DynamicPrintConfig PresetBundle::full_fff_config(bool apply_extruder, std::optio
             for (size_t i = 0; i < num_filaments; i++) {
                 for (size_t j = 0; j < filament_variant_count[i]; j++) {
                     filament_self_indice[k++] = i + 1;
+                }
+            }
+        }
+
+        // BBS: Apply AMS pressure advance overrides
+        // If AMS has calibrated k-values, use them to override filament profile pressure_advance
+        if (!filament_ams_list.empty()) {
+            ConfigOptionFloats* pressure_advance_opt = out.option<ConfigOptionFloats>("pressure_advance", true);
+            ConfigOptionBools* enable_pa_opt = out.option<ConfigOptionBools>("enable_pressure_advance", true);
+
+            // Ensure the vectors are sized correctly
+            if (pressure_advance_opt->values.size() < num_filaments) {
+                pressure_advance_opt->values.resize(num_filaments, 0.02f);
+            }
+            if (enable_pa_opt->values.size() < num_filaments) {
+                enable_pa_opt->values.resize(num_filaments, false);
+            }
+
+            // Check each filament position for AMS overrides
+            for (size_t i = 0; i < num_filaments && i < this->filament_presets.size(); ++i) {
+                // Find matching AMS entry for this filament position
+                // The filament_ams_list uses composite keys (extruder + ams_id*4 + slot_id)
+                for (const auto& ams_entry : filament_ams_list) {
+                    const DynamicPrintConfig& ams_config = ams_entry.second;
+
+                    // Check if this AMS entry matches our filament preset
+                    std::string ams_filament_id = ams_config.opt_string("filament_id", 0u);
+                    std::string current_preset_name = this->filament_presets[i];
+                    const Preset* preset = this->filaments.find_preset(current_preset_name, true);
+
+                    if (preset && preset->filament_id == ams_filament_id) {
+                        // Check if AMS has a calibrated k-value (not default)
+                        float ams_k = ams_config.opt_float("ams_pressure_advance_k", 0u);
+                        int ams_cali_idx = ams_config.opt_int("ams_cali_idx", 0u);
+
+                        // Use AMS k-value if: k > 0 OR cali_idx != -1 (meaning it's been calibrated)
+                        // cali_idx == -1 means default/uncalibrated
+                        if (ams_k > 0.0f || ams_cali_idx != -1) {
+                            BOOST_LOG_TRIVIAL(info) << boost::format("Applying AMS pressure advance override for filament %1%: k=%2%")
+                                % i % ams_k;
+                            pressure_advance_opt->values[i] = ams_k;
+                            // Enable pressure advance if AMS has a k-value
+                            if (ams_k > 0.0f) {
+                                enable_pa_opt->values[i] = true;
+                            }
+                        }
+                        // If k == 0 and cali_idx == -1, use filament profile's value (no override)
+                        break; // Found match, no need to check other AMS entries
+                    }
                 }
             }
         }

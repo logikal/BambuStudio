@@ -2988,8 +2988,8 @@ std::map<int, DynamicPrintConfig> Sidebar::build_filament_ams_list(MachineObject
     if (!obj) return filament_ams_list;
 
     auto build_tray_config = [](DevAmsTray const &tray, std::string const &name, std::string ams_id, std::string slot_id) {
-        BOOST_LOG_TRIVIAL(info) << boost::format("build_filament_ams_list: name %1% setting_id %2% type %3% color %4%")
-                    % name % tray.setting_id % tray.m_fila_type % tray.color;
+        BOOST_LOG_TRIVIAL(info) << boost::format("build_filament_ams_list: name %1% setting_id %2% type %3% color %4% k %5% n %6%")
+                    % name % tray.setting_id % tray.m_fila_type % tray.color % tray.k % tray.n;
         DynamicPrintConfig tray_config;
         tray_config.set_key_value("filament_id", new ConfigOptionStrings{tray.setting_id});
         tray_config.set_key_value("tag_uid", new ConfigOptionStrings{tray.tag_uid});
@@ -3001,6 +3001,11 @@ std::map<int, DynamicPrintConfig> Sidebar::build_filament_ams_list(MachineObject
         tray_config.set_key_value("filament_multi_colour", new ConfigOptionStrings{});
         tray_config.set_key_value("filament_colour_type", new ConfigOptionStrings{std::to_string(tray.ctype)});
         tray_config.set_key_value("filament_exist", new ConfigOptionBools{tray.is_exists});
+        // BBS: Store AMS pressure advance calibration values (k and n)
+        // k = 0.0f means no calibration or default, cali_idx = -1 means default
+        tray_config.set_key_value("ams_pressure_advance_k", new ConfigOptionFloats{tray.k});
+        tray_config.set_key_value("ams_pressure_advance_n", new ConfigOptionFloats{tray.n});
+        tray_config.set_key_value("ams_cali_idx", new ConfigOptionInts{tray.cali_idx});
         std::optional<FilamentBaseInfo> info;
         if (wxGetApp().preset_bundle) {
             info = wxGetApp().preset_bundle->get_filament_by_filament_id(tray.setting_id);
