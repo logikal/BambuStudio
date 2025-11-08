@@ -3757,14 +3757,11 @@ void TabFilament::toggle_options()
         toggle_option("filament_type", false);
         toggle_option("filament_vendor", false);
         toggle_option("impact_strength_z", false);
-        //BBS: hide these useless option for bambu printer
-        toggle_line("enable_pressure_advance", !is_BBL_printer);
-        if (is_BBL_printer)
-            toggle_line("pressure_advance", false);
-        else {
-            toggle_line("pressure_advance", true);
-            toggle_option("pressure_advance", m_config->opt_bool("enable_pressure_advance", 0));
-        }
+        //BBS: expose pressure advance options for all printers including Bambu
+        // These settings are useful for filament profiles and can be overridden by AMS calibration
+        toggle_line("enable_pressure_advance", true);
+        toggle_line("pressure_advance", true);
+        toggle_option("pressure_advance", m_config->opt_bool("enable_pressure_advance", 0));
 
         bool support_chamber_temp_control = this->m_preset_bundle->printers.get_edited_preset().config.opt_bool("support_chamber_temp_control");
         toggle_line("chamber_temperatures", support_chamber_temp_control);
@@ -4657,7 +4654,11 @@ void TabPrinter::toggle_options()
     if (m_active_page->title() == "Basic information") {
         //toggle_line("printable_area", !is_configed_by_BBL);//all printer can entry and view data
         toggle_option("single_extruder_multi_material", have_multiple_extruders);
-        //BBS: gcode_flavore of BBL printer can't be edited and changed
+        //BBS: The following settings are firmware/hardware-defined for Bambu printers and should not be modified:
+        // - gcode_flavor: Standardized G-code format for Bambu printers
+        // - printer_structure: Fixed by printer model
+        // - use_relative_e_distances: Standardized for Bambu printers
+        // - use_firmware_retraction: Not used by Bambu printers
         toggle_option("gcode_flavor", !is_BBL_printer);
         toggle_option("thumbnail_size",!is_BBL_printer);
         toggle_option("printer_structure", !is_BBL_printer);
@@ -4669,9 +4670,10 @@ void TabPrinter::toggle_options()
         bool is_marlin_flavor = flavor == gcfMarlinLegacy || flavor == gcfMarlinFirmware;
         // Disable silent mode for non-marlin firmwares.
         toggle_option("silent_mode", is_marlin_flavor);
-        //BBS: extruder clearance of BBL printer can't be edited.
+        //BBS: Expose extruder clearance settings - users may need to adjust for custom toolheads
+        // Note: These are calibrated values for stock Bambu printers but can be modified if needed
         for (auto el : {"extruder_clearance_max_radius", "extruder_clearance_dist_to_rod", "extruder_clearance_height_to_rod", "extruder_clearance_height_to_lid"})
-            toggle_option(el, !is_BBL_printer);
+            toggle_option(el, true);
     }
 
     if (m_active_page->title() == "Machine gcode") {
@@ -4690,13 +4692,10 @@ void TabPrinter::toggle_options()
         int variant_index = get_index_for_extruder(i);
         bool have_retract_length = m_config->opt_float_nullable("retraction_length", variant_index) > 0;
 
-        //BBS
-        for (auto el : { "extruder_type" , "nozzle_diameter"}) {
-            toggle_option(el, !is_BBL_printer, i);
-        }
-
+        //BBS: Expose nozzle diameter for all printers - users should be able to see/verify nozzle size
+        // extruder_type remains hidden for Bambu printers (firmware-defined)
         toggle_option("extruder_type", !is_BBL_printer, i);
-        toggle_option("nozzle_diameter", !is_BBL_printer || config_mode == ConfigOptionMode::comDevelop, i);
+        toggle_option("nozzle_diameter", true, i);  // Always show nozzle diameter
         toggle_option("extruder_offset", !is_BBL_printer || config_mode == ConfigOptionMode::comDevelop, i);
 
         toggle_option("extruder_printable_area", false, i);          // disable
