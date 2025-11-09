@@ -8762,13 +8762,18 @@ void Plater::priv::on_select_preset(wxCommandEvent &evt)
                     PresetBundle *preset_bundle = wxGetApp().preset_bundle;
                     Preset& cur_preset = preset_bundle->printers.get_edited_preset();
                     if (cur_preset.get_printer_type(preset_bundle) == obj->get_show_printer_type()) {
-                        double preset_nozzle_diameter = cur_preset.config.option<ConfigOptionFloatsNullable>("nozzle_diameter")->values[0];
+                        auto preset_nozzle_diameters = cur_preset.config.option<ConfigOptionFloatsNullable>("nozzle_diameter");
                         bool   same_nozzle_diameter   = true;
 
                         const auto& extruders = obj->GetExtderSystem()->GetExtruders();
                         for (const DevExtder &extruder : extruders) {
-                            if (!is_approx(extruder.GetNozzleDiameter(), float(preset_nozzle_diameter))) {
-                                same_nozzle_diameter = false;
+                            // Compare each extruder with its corresponding preset nozzle diameter
+                            int extruder_id = extruder.GetExtId();
+                            if (extruder_id < preset_nozzle_diameters->values.size()) {
+                                double preset_diameter = preset_nozzle_diameters->values[extruder_id];
+                                if (!is_approx(extruder.GetNozzleDiameter(), float(preset_diameter))) {
+                                    same_nozzle_diameter = false;
+                                }
                             }
                         }
 
@@ -11908,11 +11913,6 @@ bool Plater::try_sync_preset_with_connected_printer(int& nozzle_diameter)
     }
     PresetBundle* preset_bundle = wxGetApp().preset_bundle;
     Preset& printer_preset = preset_bundle->printers.get_selected_preset();
-    double              preset_nozzle_diameter = 0.4;
-    if (auto opt = printer_preset.config.option("nozzle_diameter"); opt) {
-        preset_nozzle_diameter = static_cast<const ConfigOptionFloatsNullable*>(opt)->values[0];
-    }
-    float machine_nozzle_diameter = obj->GetExtderSystem()->GetNozzleDiameter(0);
 
     std::string printer_type = obj->get_show_printer_type();
 
@@ -11927,12 +11927,28 @@ bool Plater::try_sync_preset_with_connected_printer(int& nozzle_diameter)
     bool sync_printer_preset = false;
     nozzle_diameter          = machine_preset->config.option<ConfigOptionFloatsNullable>("nozzle_diameter")->values.size();
     bool is_multi_extruder   = nozzle_diameter > 1;
+
+    // Check if any nozzle diameters differ between preset and machine
+    bool nozzle_diameters_match = true;
+    if (auto opt = printer_preset.config.option("nozzle_diameter"); opt) {
+        auto preset_nozzle_diameters = static_cast<const ConfigOptionFloatsNullable*>(opt);
+        int extruder_count = obj->GetExtderSystem()->GetTotalExtderCount();
+        for (int i = 0; i < extruder_count && i < preset_nozzle_diameters->values.size(); i++) {
+            float preset_diameter = preset_nozzle_diameters->values[i];
+            float machine_diameter = obj->GetExtderSystem()->GetNozzleDiameter(i);
+            if (!is_approx(preset_diameter, machine_diameter)) {
+                nozzle_diameters_match = false;
+                break;
+            }
+        }
+    }
+
     if (!wxGetApp().app_config->has("sync_after_load_file_show_flag")) {
-        if (printer_preset.get_current_printer_type(preset_bundle) != printer_type || !is_approx((float)(preset_nozzle_diameter), machine_nozzle_diameter)) {
+        if (printer_preset.get_current_printer_type(preset_bundle) != printer_type || !nozzle_diameters_match) {
             wxString tips;
             if (printer_preset.get_current_printer_type(preset_bundle) != printer_type)
                 tips = from_u8((boost::format(_u8L("The currently connected printer '%s', is a %s model.\nTo use this printer for printing, please switch the printer model of project file to %s.")) % obj->get_dev_name() % printer_model % printer_model).str());
-            else if (!is_approx((float) (preset_nozzle_diameter), machine_nozzle_diameter))
+            else if (!nozzle_diameters_match)
                 tips = from_u8((boost::format(_u8L("The currently connected printer '%s', is a %s model but not consistent with preset in project file.\n"
                     "To use this printer for printing, please switch the preset first.")) % obj->get_dev_name() % printer_model).str());
 
@@ -14738,8 +14754,9 @@ Preset *get_printer_preset(const MachineObject *obj)
         return nullptr;
 
     Preset       *printer_preset = nullptr;
-    float machine_nozzle_diameter = obj->GetExtderSystem()->GetNozzleDiameter(0);
     PresetBundle *preset_bundle  = wxGetApp().preset_bundle;
+    int extruder_count = obj->GetExtderSystem()->GetTotalExtderCount();
+
     for (auto printer_it = preset_bundle->printers.begin(); printer_it != preset_bundle->printers.end(); printer_it++) {
         // only use system printer preset
         if (!printer_it->is_system)
@@ -14751,8 +14768,27 @@ Preset *get_printer_preset(const MachineObject *obj)
         std::string model_id = printer_it->get_current_printer_type(preset_bundle);
 
         std::string printer_type = obj->get_show_printer_type();
-        if (model_id.compare(printer_type) == 0 && printer_nozzle_vals && abs(printer_nozzle_vals->get_at(0) - machine_nozzle_diameter) < 1e-3) {
-            printer_preset = &(*printer_it);
+        if (model_id.compare(printer_type) == 0 && printer_nozzle_vals) {
+            // For multi-extruder printers, check all nozzle diameters match
+            bool all_nozzles_match = true;
+            int preset_nozzle_count = printer_nozzle_vals->values.size();
+
+            if (preset_nozzle_count == extruder_count) {
+                for (int i = 0; i < extruder_count; i++) {
+                    float machine_nozzle_diameter = obj->GetExtderSystem()->GetNozzleDiameter(i);
+                    if (abs(printer_nozzle_vals->get_at(i) - machine_nozzle_diameter) >= 1e-3) {
+                        all_nozzles_match = false;
+                        break;
+                    }
+                }
+            } else {
+                all_nozzles_match = false;
+            }
+
+            if (all_nozzles_match) {
+                printer_preset = &(*printer_it);
+                break; // Found a match, exit early
+            }
         }
     }
     return printer_preset;

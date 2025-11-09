@@ -1935,7 +1935,8 @@ bool SyncAmsInfoDialog::is_same_nozzle_diameters(NozzleType &tag_nozzle_type, fl
             for (auto i = 0; i < used_extruders.size(); i++) {
                 auto extruder           = used_extruders[i];
                 preset_nozzle_diameters = float(opt_nozzle_diameters->get_at(extruder));
-                if (preset_nozzle_diameters != obj_->GetExtderSystem()->GetNozzleDiameter(0)) { is_same_nozzle_diameters = false; }
+                // Compare each extruder's preset diameter with its corresponding machine diameter
+                if (preset_nozzle_diameters != obj_->GetExtderSystem()->GetNozzleDiameter(extruder)) { is_same_nozzle_diameters = false; }
             }
         }
 
