@@ -1884,8 +1884,7 @@ bool SyncAmsInfoDialog::is_same_nozzle_diameters(NozzleType &tag_nozzle_type, fl
 {
     bool is_same_nozzle_diameters = true;
 
-    float       preset_nozzle_diameters;
-    std::string preset_nozzle_type;
+    float preset_nozzle_diameters = 0.f;
 
     DeviceManager *dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return true;
@@ -1914,16 +1913,18 @@ bool SyncAmsInfoDialog::is_same_nozzle_diameters(NozzleType &tag_nozzle_type, fl
         }
         std::sort(used_extruders.begin(), used_extruders.end());
 
-        // TODO [tao wang] : add idx mapping
-        tag_nozzle_type = obj_->GetExtderSystem()->GetNozzleType(0);
-
         if (opt_nozzle_diameters != nullptr) {
-            for (auto i = 0; i < used_extruders.size(); i++) {
+            for (size_t i = 0; i < used_extruders.size(); i++) {
                 auto extruder           = used_extruders[i];
                 preset_nozzle_diameters = float(opt_nozzle_diameters->get_at(extruder));
-                if (preset_nozzle_diameters != obj_->GetExtderSystem()->GetNozzleDiameter(0)) { is_same_nozzle_diameters = false; }
+                if (std::abs(preset_nozzle_diameters - obj_->GetExtderSystem()->GetNozzleDiameter(extruder)) >= 1e-3f) {
+                    is_same_nozzle_diameters = false;
+                }
             }
         }
+
+        const int tag_extruder = used_extruders.empty() ? 0 : used_extruders.front();
+        tag_nozzle_type        = obj_->GetExtderSystem()->GetNozzleType(tag_extruder);
 
     } catch (...) {}
 

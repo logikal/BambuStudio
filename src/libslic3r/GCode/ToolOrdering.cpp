@@ -1510,11 +1510,13 @@ void ToolOrdering::reorder_extruders_for_minimum_flush_volume(bool reorder_first
             for (auto& item : maps_without_group)
                 item = 0;
 
+            const size_t fallback_extruder_id = used_filaments.empty() ? 0 : used_filaments.front();
+
             MultiNozzleUtils::NozzleInfo tmp;
-            tmp.diameter = print_config->nozzle_diameter.get_at(0);
+            tmp.diameter = print_config->nozzle_diameter.get_at(fallback_extruder_id);
             tmp.group_id = 0;
-            tmp.extruder_id = 0;
-            tmp.volume_type = NozzleVolumeType::nvtStandard;
+            tmp.extruder_id = fallback_extruder_id;
+            tmp.volume_type = static_cast<NozzleVolumeType>(print_config->nozzle_volume_type.get_at(fallback_extruder_id));
 
             MultiNozzleUtils::MultiNozzleGroupResult result(maps_without_group, { tmp }, used_filaments);
 

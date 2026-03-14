@@ -17407,8 +17407,7 @@ Preset *get_printer_preset(const MachineObject *obj)
     if (!obj)
         return nullptr;
 
-    Preset       *printer_preset = nullptr;
-    float machine_nozzle_diameter = obj->GetExtderSystem()->GetNozzleDiameter(0);
+    Preset *printer_preset = nullptr;
     PresetBundle *preset_bundle  = wxGetApp().preset_bundle;
     for (auto printer_it = preset_bundle->printers.begin(); printer_it != preset_bundle->printers.end(); printer_it++) {
         // only use system printer preset
@@ -17421,8 +17420,24 @@ Preset *get_printer_preset(const MachineObject *obj)
         std::string model_id = printer_it->get_current_printer_type(preset_bundle);
 
         std::string printer_type = obj->get_show_printer_type();
-        if (model_id.compare(printer_type) == 0 && printer_nozzle_vals && abs(printer_nozzle_vals->get_at(0) - machine_nozzle_diameter) < 1e-3) {
+        if (model_id.compare(printer_type) != 0 || !printer_nozzle_vals)
+            continue;
+
+        const size_t machine_extruder_count = obj->GetExtderSystem()->GetTotalExtderCount();
+        if (printer_nozzle_vals->values.size() != machine_extruder_count)
+            continue;
+
+        bool matched_nozzle_vector = true;
+        for (size_t i = 0; i < printer_nozzle_vals->values.size(); ++i) {
+            if (std::abs(printer_nozzle_vals->get_at(i) - obj->GetExtderSystem()->GetNozzleDiameter(i)) >= 1e-3f) {
+                matched_nozzle_vector = false;
+                break;
+            }
+        }
+
+        if (matched_nozzle_vector) {
             printer_preset = &(*printer_it);
+            break;
         }
     }
     return printer_preset;

@@ -1654,8 +1654,15 @@ bool PartPlate::check_mixture_filament_compatible(const DynamicPrintConfig &conf
 
 bool PartPlate::check_compatible_of_nozzle_and_filament(const DynamicPrintConfig &config, const std::vector<std::string> &filament_presets, std::string &error_msg)
 {
-    float nozzle_diameter = config.option<ConfigOptionFloatsNullable>("nozzle_diameter")->values[0];
+    const auto *nozzle_diameter_opt = config.option<ConfigOptionFloatsNullable>("nozzle_diameter");
+    if (nozzle_diameter_opt == nullptr || nozzle_diameter_opt->values.empty())
+        return true;
+
     auto  volume_type_opt = config.option<ConfigOptionEnumsGeneric>("nozzle_volume_type");
+    if (volume_type_opt == nullptr || volume_type_opt->values.empty())
+        return true;
+
+    std::vector<int> used_filaments = get_extruders(true); // 1 based
 
     auto get_filament_alias = [](std::string preset_name) -> std::string {
         size_t      at_pos = preset_name.find('@');
@@ -1666,20 +1673,8 @@ bool PartPlate::check_compatible_of_nozzle_and_filament(const DynamicPrintConfig
         return alias.substr(first, last - first + 1);
     };
 
-    bool with_same_volume_type = std::all_of(volume_type_opt->values.begin(), volume_type_opt->values.end(),
-                                             [first_value = volume_type_opt->values[0]](int value) { return value == first_value; });
-
     std::set<std::string> selected_filament_alias;
     for (auto &filament_preset : filament_presets) { selected_filament_alias.insert(get_filament_alias(filament_preset)); }
-
-    auto get_incompatible_selected = [&](const NozzleVolumeType volume_type) -> std::set<std::string> {
-        std::vector<std::string> incompatible_filaments = Print::get_incompatible_filaments_by_nozzle(nozzle_diameter, volume_type);
-        std::set<std::string>    ret;
-        for (auto &filament : selected_filament_alias) {
-            if (std::find(incompatible_filaments.begin(), incompatible_filaments.end(), filament) != incompatible_filaments.end()) ret.insert(filament);
-        }
-        return ret;
-    };
 
     auto get_nozzle_msg = [](const float nozzle_diameter, const NozzleVolumeType volume_type) -> std::string {
         std::ostringstream oss;
@@ -1702,29 +1697,38 @@ bool PartPlate::check_compatible_of_nozzle_and_filament(const DynamicPrintConfig
 
     error_msg.clear();
 
-    std::set<int>                                     nozzle_volumes(volume_type_opt->values.begin(), volume_type_opt->values.end());
-    std::map<NozzleVolumeType, std::set<std::string>> incompatible_selected_map;
+    std::map<std::string, std::set<std::string>> incompatible_selected_map;
 
-    for (auto volume_type_value : nozzle_volumes) {
-        NozzleVolumeType volume_type           = static_cast<NozzleVolumeType>(volume_type_value);
-        auto             incompatible_selected = get_incompatible_selected(volume_type);
-        if (!incompatible_selected.empty()) incompatible_selected_map[volume_type] = incompatible_selected;
+    for (int filament_id : used_filaments) {
+        const int extruder_id = filament_id - 1;
+        if (extruder_id < 0 || extruder_id >= int(nozzle_diameter_opt->values.size()) || extruder_id >= int(volume_type_opt->values.size()))
+            continue;
+
+        const float            extruder_nozzle_diameter = nozzle_diameter_opt->values[extruder_id];
+        const NozzleVolumeType volume_type              = static_cast<NozzleVolumeType>(volume_type_opt->values[extruder_id]);
+        std::vector<std::string> incompatible_filaments = Print::get_incompatible_filaments_by_nozzle(extruder_nozzle_diameter, volume_type);
+
+        const std::string key = get_nozzle_msg(extruder_nozzle_diameter, volume_type);
+        for (const auto &filament : selected_filament_alias) {
+            if (std::find(incompatible_filaments.begin(), incompatible_filaments.end(), filament) != incompatible_filaments.end())
+                incompatible_selected_map[key].insert(filament);
+        }
     }
 
     if (incompatible_selected_map.empty()) return true;
 
     if (incompatible_selected_map.size() == 1) {
-        auto             elem                  = incompatible_selected_map.begin();
-        NozzleVolumeType volume_type           = elem->first;
-        auto             incompatible_selected = elem->second;
-        error_msg = GUI::format(_L("It is not recommended to print the following filament(s) with %1%: %2%\n"), get_nozzle_msg(nozzle_diameter, volume_type),
+        auto        elem                  = incompatible_selected_map.begin();
+        std::string nozzle_msg            = elem->first;
+        auto        incompatible_selected = elem->second;
+        error_msg = GUI::format(_L("It is not recommended to print the following filament(s) with %1%: %2%\n"), nozzle_msg,
                                 get_incompatible_filament_msg(incompatible_selected));
     } else {
         std::string warning_msg = _u8L("It is not recommended to use the following nozzle and filament combinations:\n");
         for (auto &elem : incompatible_selected_map) {
-            NozzleVolumeType volume_type           = elem.first;
-            auto             incompatible_selected = elem.second;
-            warning_msg += GUI::format(_L("%1% with %2%\n"),get_nozzle_msg(nozzle_diameter, volume_type), get_incompatible_filament_msg(incompatible_selected));
+            auto nozzle_msg            = elem.first;
+            auto incompatible_selected = elem.second;
+            warning_msg += GUI::format(_L("%1% with %2%\n"), nozzle_msg, get_incompatible_filament_msg(incompatible_selected));
         }
         error_msg = warning_msg;
     }
