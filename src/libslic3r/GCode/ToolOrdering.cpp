@@ -1510,8 +1510,20 @@ void ToolOrdering::reorder_extruders_for_minimum_flush_volume(bool reorder_first
             for (auto& item : maps_without_group)
                 item = 0;
 
+            double single_extruder_diameter = 0.;
+            for (unsigned int filament_id : used_filaments) {
+                if (filament_id >= filament_maps.size())
+                    continue;
+                const int extruder_idx = filament_maps[filament_id];
+                if (extruder_idx < 0)
+                    continue;
+                single_extruder_diameter = std::max(single_extruder_diameter, print_config->nozzle_diameter.get_at(extruder_idx));
+            }
+            if (single_extruder_diameter <= 0. && !print_config->nozzle_diameter.values.empty())
+                single_extruder_diameter = print_config->nozzle_diameter.values.front();
+
             MultiNozzleUtils::NozzleInfo tmp;
-            tmp.diameter = print_config->nozzle_diameter.get_at(0);
+            tmp.diameter = format_diameter_to_str(single_extruder_diameter);
             tmp.group_id = 0;
             tmp.extruder_id = 0;
             tmp.volume_type = NozzleVolumeType::nvtStandard;

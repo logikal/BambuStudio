@@ -4,8 +4,10 @@
 #define slic3r_Slicing_hpp_
 
 #include <cstring>
+#include <cstdint>
 #include <map>
 #include <set>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -196,6 +198,30 @@ namespace Slicing {
 	// it should not be smaller than the minimum layer height.
 	// Nozzle index is 1 based.
 	coordf_t max_layer_height_from_nozzle(const DynamicPrintConfig &print_config, int idx_nozzle);
+
+    enum class LayerGridMode : uint8_t {
+        SharedGrid,
+        SeparateObjectIndependentGrid,
+        SameObjectCompatibleCadence,
+        Unsupported
+    };
+
+    struct LayerGridObjectSpec {
+        coordf_t             first_print_layer_height { 0 };
+        coordf_t             layer_height             { 0 };
+        coordf_t             min_layer_height         { 0 };
+        coordf_t             max_layer_height         { 0 };
+        bool                 uses_multiple_extruders  { false };
+        std::vector<coordf_t> nozzle_diameters;
+    };
+
+    // True if the nozzle vector can legally share one object layer cadence.
+    bool nozzle_vector_has_compatible_cadence(const std::vector<coordf_t> &nozzle_diameters, coordf_t layer_height);
+
+    // Classify the print grid mode from per-object specifications.
+    LayerGridMode classify_layer_grid_mode(const std::vector<LayerGridObjectSpec> &objects, std::string *reason = nullptr);
+
+    const char *layer_grid_mode_name(LayerGridMode mode);
 } // namespace Slicing
 
 } // namespace Slic3r

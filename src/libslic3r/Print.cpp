@@ -1276,6 +1276,31 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         return profile;
     };
 
+    std::vector<Slicing::LayerGridObjectSpec> layer_grid_specs;
+    layer_grid_specs.reserve(m_objects.size());
+    for (const PrintObject *object : m_objects) {
+        Slicing::LayerGridObjectSpec spec;
+        const SlicingParameters &slicing_params = object->slicing_parameters();
+        spec.first_print_layer_height = slicing_params.first_print_layer_height;
+        spec.layer_height             = slicing_params.layer_height;
+        spec.min_layer_height         = slicing_params.min_layer_height;
+        spec.max_layer_height         = slicing_params.max_layer_height;
+
+        std::vector<unsigned int> object_extruders = object->object_extruders();
+        spec.uses_multiple_extruders               = object_extruders.size() > 1;
+        spec.nozzle_diameters.reserve(object_extruders.size());
+        for (unsigned int extruder_id : object_extruders)
+            spec.nozzle_diameters.emplace_back(m_config.nozzle_diameter.get_at(extruder_id));
+        layer_grid_specs.emplace_back(std::move(spec));
+    }
+    std::string layer_grid_reason;
+    const Slicing::LayerGridMode layer_grid_mode = Slicing::classify_layer_grid_mode(layer_grid_specs, &layer_grid_reason);
+    if (layer_grid_mode == Slicing::LayerGridMode::Unsupported) {
+        if (!layer_grid_reason.empty())
+            return { layer_grid_reason };
+        return { L("The selected mixed nozzle and layer-grid combination is not supported yet.") };
+    }
+
 
     // Custom layering is not allowed for tree supports as of now.
     for (size_t print_object_idx = 0; print_object_idx < m_objects.size(); ++print_object_idx) {
@@ -1294,17 +1319,12 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
     }
 
     if (this->has_wipe_tower() && ! m_objects.empty()) {
-        // Make sure all extruders use same diameter filament and have the same nozzle diameter
-        // EPSILON comparison is used for nozzles and 10 % tolerance is used for filaments
-        double first_nozzle_diam = m_config.nozzle_diameter.get_at(extruders.front());
+        // Make sure all extruders use same filament diameter (10 % tolerance).
         double first_filament_diam = m_config.filament_diameter.get_at(extruders.front());
         for (const auto& extruder_idx : extruders) {
-            double nozzle_diam = m_config.nozzle_diameter.get_at(extruder_idx);
             double filament_diam = m_config.filament_diameter.get_at(extruder_idx);
-            if (nozzle_diam - EPSILON > first_nozzle_diam || nozzle_diam + EPSILON < first_nozzle_diam
-                || std::abs((filament_diam - first_filament_diam) / first_filament_diam) > 0.1)
-                // BBS: remove L()
-                return { L("Different nozzle diameters and different filament diameters is not allowed when prime tower is enabled.") };
+            if (std::abs((filament_diam - first_filament_diam) / first_filament_diam) > 0.1)
+                return { L("Different filament diameters is not allowed when prime tower is enabled.") };
         }
 
         if (! m_config.use_relative_e_distances)
@@ -1339,21 +1359,29 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
         }
 #endif
 
-        if (m_objects.size() > 1) {
-            // Some of the objects has variable layer height applied by painting or by a table.
-            bool has_custom_layering = std::any_of(m_objects.begin(), m_objects.end(),
-                [](const PrintObject* object) { return object->model_object()->has_custom_layering(); });
+        const bool has_custom_layering = std::any_of(m_objects.begin(), m_objects.end(),
+            [](const PrintObject* object) { return object->model_object()->has_custom_layering(); });
+        if (has_custom_layering && layer_grid_mode != Slicing::LayerGridMode::SharedGrid)
+            return { L("The prime tower with variable layer height requires all objects to use one shared layer grid.") };
 
+        if (m_objects.size() > 1) {
             const SlicingParameters &slicing_params0 = m_objects.front()->slicing_parameters();
-            size_t            tallest_object_idx = 0;
             for (size_t i = 1; i < m_objects.size(); ++ i) {
-                const PrintObject       *object         = m_objects[i];
-                const SlicingParameters &slicing_params = object->slicing_parameters();
-                if (std::abs(slicing_params.first_print_layer_height - slicing_params0.first_print_layer_height) > EPSILON ||
-                    std::abs(slicing_params.layer_height             - slicing_params0.layer_height            ) > EPSILON)
-                    return {L("The prime tower requires that all objects have the same layer heights"), object, "initial_layer_print_height"};
+                const SlicingParameters &slicing_params = m_objects[i]->slicing_parameters();
                 if (slicing_params.raft_layers() != slicing_params0.raft_layers())
-                    return {L("The prime tower requires that all objects are printed over the same number of raft layers"), object, "raft_layers"};
+                    return {L("The prime tower requires that all objects are printed over the same number of raft layers"), m_objects[i], "raft_layers"};
+            }
+
+            if (layer_grid_mode == Slicing::LayerGridMode::SharedGrid) {
+                // Some of the objects has variable layer height applied by painting or by a table.
+                size_t tallest_object_idx = 0;
+
+                for (size_t i = 1; i < m_objects.size(); ++ i) {
+                    const PrintObject       *object         = m_objects[i];
+                    const SlicingParameters &slicing_params = object->slicing_parameters();
+                    if (std::abs(slicing_params.first_print_layer_height - slicing_params0.first_print_layer_height) > EPSILON ||
+                        std::abs(slicing_params.layer_height             - slicing_params0.layer_height            ) > EPSILON)
+                        return {L("The prime tower requires that all objects have the same layer heights"), object, "initial_layer_print_height"};
                 // BBS: support gap can be multiple of object layer height, remove _L()
 #if 0
                 if (slicing_params0.gap_object_support != slicing_params.gap_object_support ||
@@ -1362,39 +1390,40 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
 #endif
                 if (!equal_layering(slicing_params, slicing_params0))
                     return  { L("The prime tower requires that all objects are sliced with the same layer heights."), object };
+                    if (has_custom_layering) {
+                        auto &lh         = layer_height_profile(i);
+                        auto &lh_tallest = layer_height_profile(tallest_object_idx);
+                        if (*(lh.end()-2) > *(lh_tallest.end()-2))
+                            tallest_object_idx = i;
+                    }
+                }
+
+                // BBS: remove obsolete logics and _L()
                 if (has_custom_layering) {
-                    auto &lh         = layer_height_profile(i);
-                    auto &lh_tallest = layer_height_profile(tallest_object_idx);
-                    if (*(lh.end()-2) > *(lh_tallest.end()-2))
-                        tallest_object_idx = i;
-                }
-            }
+                    std::vector<std::vector<coordf_t>> layer_z_series;
+                    layer_z_series.assign(m_objects.size(), std::vector<coordf_t>());
 
-            // BBS: remove obsolete logics and _L()
-            if (has_custom_layering) {
-                std::vector<std::vector<coordf_t>> layer_z_series;
-                layer_z_series.assign(m_objects.size(), std::vector<coordf_t>());
+                    for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
+                        layer_z_series[idx_object] = generate_object_layers(m_objects[idx_object]->slicing_parameters(), layer_height_profiles[idx_object], m_objects[idx_object]->config().precise_z_height.value);
+                    }
 
-                for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
-                    layer_z_series[idx_object] = generate_object_layers(m_objects[idx_object]->slicing_parameters(), layer_height_profiles[idx_object], m_objects[idx_object]->config().precise_z_height.value);
-                }
-
-                for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
-                    if (idx_object == tallest_object_idx) continue;
-                    // Check that the layer height profiles are equal. This will happen when one object is
-                    // a copy of another, or when a layer height modifier is used the same way on both objects.
-                    // The latter case might create a floating point inaccuracy mismatch, so compare
-                    // element-wise using an epsilon check.
-                    size_t         i   = 0;
-                    const coordf_t eps = 0.5 * EPSILON; // layers closer than EPSILON will be merged later. Let's make
-                    // this check a bit more sensitive to make sure we never consider two different layers as one.
-                    while (i < layer_z_series[idx_object].size() && i < layer_z_series[tallest_object_idx].size()) {
-                        // BBS: remove the break condition, because a variable layer height object and a new object will not be checked when slicing
-                        //if (i % 2 == 0 && layer_height_profiles[tallest_object_idx][i] > layer_height_profiles[idx_object][layer_height_profiles[idx_object].size() - 2])
-                        //    break;
-                        if (std::abs(layer_z_series[idx_object][i] - layer_z_series[tallest_object_idx][i]) > eps)
-                            return {L("The prime tower is only supported if all objects have the same variable layer height")};
-                        ++i;
+                    for (size_t idx_object = 0; idx_object < m_objects.size(); ++idx_object) {
+                        if (idx_object == tallest_object_idx) continue;
+                        // Check that the layer height profiles are equal. This will happen when one object is
+                        // a copy of another, or when a layer height modifier is used the same way on both objects.
+                        // The latter case might create a floating point inaccuracy mismatch, so compare
+                        // element-wise using an epsilon check.
+                        size_t         i   = 0;
+                        const coordf_t eps = 0.5 * EPSILON; // layers closer than EPSILON will be merged later. Let's make
+                        // this check a bit more sensitive to make sure we never consider two different layers as one.
+                        while (i < layer_z_series[idx_object].size() && i < layer_z_series[tallest_object_idx].size()) {
+                            // BBS: remove the break condition, because a variable layer height object and a new object will not be checked when slicing
+                            //if (i % 2 == 0 && layer_height_profiles[tallest_object_idx][i] > layer_height_profiles[idx_object][layer_height_profiles[idx_object].size() - 2])
+                            //    break;
+                            if (std::abs(layer_z_series[idx_object][i] - layer_z_series[tallest_object_idx][i]) > eps)
+                                return {L("The prime tower is only supported if all objects have the same variable layer height")};
+                            ++i;
+                        }
                     }
                 }
             }
