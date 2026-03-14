@@ -1883,9 +1883,7 @@ bool SyncAmsInfoDialog::is_blocking_printing(MachineObject *obj_)
 bool SyncAmsInfoDialog::is_same_nozzle_diameters(NozzleType &tag_nozzle_type, float &nozzle_diameter)
 {
     bool is_same_nozzle_diameters = true;
-
-    float       preset_nozzle_diameters;
-    std::string preset_nozzle_type;
+    float       preset_nozzle_diameters = 0.f;
 
     DeviceManager *dev = Slic3r::GUI::wxGetApp().getDeviceManager();
     if (!dev) return true;
@@ -1896,32 +1894,34 @@ bool SyncAmsInfoDialog::is_same_nozzle_diameters(NozzleType &tag_nozzle_type, fl
     try {
         PresetBundle *preset_bundle        = wxGetApp().preset_bundle;
         auto          opt_nozzle_diameters = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionFloatsNullable>("nozzle_diameter");
+        auto         *plate                = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+        if (plate == nullptr)
+            return true;
 
-        const ConfigOptionEnumsGenericNullable *nozzle_type = preset_bundle->printers.get_edited_preset().config.option<ConfigOptionEnumsGenericNullable>("nozzle_type");
-        std::vector<std::string>                preset_nozzle_types(nozzle_type->size());
-        for (size_t idx = 0; idx < nozzle_type->size(); ++idx) preset_nozzle_types[idx] = NozzleTypeEumnToStr[NozzleType(nozzle_type->values[idx])];
+        auto used_filaments = plate->get_used_filaments(); // 1 based
 
-        std::vector<std::string> machine_nozzle_types(obj_->GetExtderSystem()->GetTotalExtderCount());
-        for (size_t idx = 0; idx < obj_->GetExtderSystem()->GetTotalExtderCount(); ++idx) machine_nozzle_types[idx] = obj_->GetExtderSystem()->GetNozzleType(idx);
-
-        auto used_filaments = wxGetApp().plater()->get_partplate_list().get_curr_plate()->get_used_filaments();                                  // 1 based
-        auto filament_maps  = wxGetApp().plater()->get_partplate_list().get_curr_plate()->get_real_filament_maps(preset_bundle->project_config); // 1 based
-
-        std::vector<int> used_extruders; // 0 based
+        std::vector<int> used_extruders; // physical extruder index, 0 based
         for (auto f : used_filaments) {
-            int filament_extruder = filament_maps[f - 1] - 1;
-            if (std::find(used_extruders.begin(), used_extruders.end(), filament_extruder) == used_extruders.end()) used_extruders.emplace_back(filament_extruder);
+            int physical_extruder = plate->get_physical_extruder_by_filament_id(preset_bundle->project_config, f);
+            if (physical_extruder < 0)
+                continue;
+            if (std::find(used_extruders.begin(), used_extruders.end(), physical_extruder) == used_extruders.end())
+                used_extruders.emplace_back(physical_extruder);
         }
         std::sort(used_extruders.begin(), used_extruders.end());
 
-        // TODO [tao wang] : add idx mapping
-        tag_nozzle_type = obj_->GetExtderSystem()->GetNozzleType(0);
+        if (used_extruders.empty())
+            used_extruders.emplace_back(0);
+        tag_nozzle_type = obj_->GetExtderSystem()->GetNozzleType(used_extruders.front());
 
         if (opt_nozzle_diameters != nullptr) {
-            for (auto i = 0; i < used_extruders.size(); i++) {
+            for (size_t i = 0; i < used_extruders.size(); i++) {
                 auto extruder           = used_extruders[i];
                 preset_nozzle_diameters = float(opt_nozzle_diameters->get_at(extruder));
-                if (preset_nozzle_diameters != obj_->GetExtderSystem()->GetNozzleDiameter(0)) { is_same_nozzle_diameters = false; }
+                if (!is_approx(preset_nozzle_diameters, obj_->GetExtderSystem()->GetNozzleDiameter(extruder))) {
+                    is_same_nozzle_diameters = false;
+                    break;
+                }
             }
         }
 
@@ -1942,15 +1942,22 @@ bool SyncAmsInfoDialog::is_same_nozzle_type(std::string &filament_type, NozzleTy
     MachineObject *obj_ = dev->get_selected_machine();
     if (obj_ == nullptr) return true;
 
-    NozzleType nozzle_type        = obj_->GetExtderSystem()->GetNozzleType(0);
-    auto       printer_nozzle_hrc = Print::get_hrc_by_nozzle_type(nozzle_type);
-
-    auto                   preset_bundle = wxGetApp().preset_bundle;
-    MaterialHash::iterator iter          = m_materialList.begin();
+    auto           *preset_bundle = wxGetApp().preset_bundle;
+    auto           *plate         = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    if (plate == nullptr)
+        return true;
+    MaterialHash::iterator iter   = m_materialList.begin();
     while (iter != m_materialList.end()) {
-        Material *    item                = iter->second;
-        auto               m              = item->item;
-        auto          filament_nozzle_hrc = preset_bundle->get_required_hrc_by_filament_id(m->m_filament_id);
+        Material *item = iter->second;
+        auto      m    = item->item;
+
+        int physical_extruder = plate->get_physical_extruder_by_filament_id(preset_bundle->project_config, m->m_filament_id);
+        if (physical_extruder < 0)
+            physical_extruder = 0;
+
+        NozzleType nozzle_type        = obj_->GetExtderSystem()->GetNozzleType(physical_extruder);
+        auto       printer_nozzle_hrc = Print::get_hrc_by_nozzle_type(nozzle_type);
+        auto       filament_nozzle_hrc = preset_bundle->get_required_hrc_by_filament_id(m->m_filament_id);
 
         if (abs(filament_nozzle_hrc) > abs(printer_nozzle_hrc)) {
             filament_type = m->m_material_name.ToStdString();
@@ -1958,11 +1965,10 @@ bool SyncAmsInfoDialog::is_same_nozzle_type(std::string &filament_type, NozzleTy
             is_same_nozzle_type = false;
             tag_nozzle_type     = NozzleType::ntHardenedSteel;
             return is_same_nozzle_type;
-        } else {
-            tag_nozzle_type = obj_->GetExtderSystem()->GetNozzleType(0);
         }
 
-        iter++;
+        tag_nozzle_type = nozzle_type;
+        ++iter;
     }
 
     return is_same_nozzle_type;

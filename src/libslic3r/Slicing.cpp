@@ -1,3 +1,5 @@
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "libslic3r.h"
@@ -59,6 +61,93 @@ coordf_t Slicing::max_layer_height_from_nozzle(const DynamicPrintConfig &print_c
     return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
 }
 
+const char *Slicing::layer_grid_mode_name(LayerGridMode mode)
+{
+    switch (mode) {
+    case LayerGridMode::SharedGrid:                    return "shared-grid";
+    case LayerGridMode::SeparateObjectIndependentGrid: return "separate-object-independent-grid";
+    case LayerGridMode::SameObjectCompatibleCadence:   return "same-object-compatible-cadence";
+    case LayerGridMode::Unsupported:                   return "unsupported";
+    }
+    return "unsupported";
+}
+
+bool Slicing::nozzle_vector_has_compatible_cadence(const std::vector<coordf_t> &nozzle_diameters, coordf_t layer_height)
+{
+    if (layer_height <= EPSILON)
+        return false;
+
+    std::vector<coordf_t> sorted = nozzle_diameters;
+    sorted.erase(std::remove_if(sorted.begin(), sorted.end(), [](coordf_t d) { return d <= EPSILON; }), sorted.end());
+    if (sorted.empty())
+        return true;
+
+    std::sort(sorted.begin(), sorted.end());
+    sorted.erase(std::unique(sorted.begin(), sorted.end(), [](coordf_t a, coordf_t b) { return std::abs(a - b) <= EPSILON; }), sorted.end());
+    if (sorted.size() <= 1)
+        return true;
+
+    auto is_integral_ratio = [](double value) {
+        const double rounded = std::round(value);
+        return std::abs(value - rounded) <= 1e-3;
+    };
+
+    const coordf_t base_nozzle = sorted.front();
+    for (coordf_t diameter : sorted) {
+        if (!is_integral_ratio(diameter / layer_height))
+            return false;
+        if (!is_integral_ratio(diameter / base_nozzle))
+            return false;
+    }
+    return true;
+}
+
+Slicing::LayerGridMode Slicing::classify_layer_grid_mode(const std::vector<LayerGridObjectSpec> &objects, std::string *reason)
+{
+    if (reason)
+        reason->clear();
+
+    if (objects.empty())
+        return LayerGridMode::SharedGrid;
+
+    const LayerGridObjectSpec &reference = objects.front();
+    bool shared_grid                     = true;
+    bool same_object_mixed_nozzle        = false;
+
+    for (const LayerGridObjectSpec &object : objects) {
+        if (std::abs(object.first_print_layer_height - reference.first_print_layer_height) > EPSILON ||
+            std::abs(object.layer_height - reference.layer_height) > EPSILON)
+            shared_grid = false;
+
+        if (object.layer_height + EPSILON < object.min_layer_height || object.layer_height > object.max_layer_height + EPSILON) {
+            if (reason)
+                *reason = "The configured layer height is outside nozzle-supported limits.";
+            return LayerGridMode::Unsupported;
+        }
+
+        if (!object.uses_multiple_extruders)
+            continue;
+
+        std::vector<coordf_t> nozzles = object.nozzle_diameters;
+        nozzles.erase(std::remove_if(nozzles.begin(), nozzles.end(), [](coordf_t d) { return d <= EPSILON; }), nozzles.end());
+        std::sort(nozzles.begin(), nozzles.end());
+        nozzles.erase(std::unique(nozzles.begin(), nozzles.end(), [](coordf_t a, coordf_t b) { return std::abs(a - b) <= EPSILON; }), nozzles.end());
+        if (nozzles.size() <= 1)
+            continue;
+
+        same_object_mixed_nozzle = true;
+        if (!nozzle_vector_has_compatible_cadence(nozzles, object.layer_height)) {
+            if (reason)
+                *reason = "Same-object mixed nozzles require an integer-compatible layer cadence.";
+            return LayerGridMode::Unsupported;
+        }
+    }
+
+    if (same_object_mixed_nozzle)
+        return LayerGridMode::SameObjectCompatibleCadence;
+    return shared_grid ? LayerGridMode::SharedGrid : LayerGridMode::SeparateObjectIndependentGrid;
+}
+
 SlicingParameters SlicingParameters::create_from_config(
 	const PrintConfig 		&print_config, 
 	const PrintObjectConfig &object_config,
@@ -99,12 +188,12 @@ SlicingParameters SlicingParameters::create_from_config(
         params.max_suport_layer_height = params.max_layer_height;
     }
     if (object_extruders.empty()) {
-        params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, 0));
-        params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, 0));
+        params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, 1));
+        params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, 1));
     } else {
         for (unsigned int extruder_id : object_extruders) {
-            params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, extruder_id));
-            params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, extruder_id));
+            params.min_layer_height = std::max(params.min_layer_height, min_layer_height_from_nozzle(print_config, int(extruder_id) + 1));
+            params.max_layer_height = std::min(params.max_layer_height, max_layer_height_from_nozzle(print_config, int(extruder_id) + 1));
         }
     }
     params.min_layer_height = std::min(params.min_layer_height, params.layer_height);
