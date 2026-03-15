@@ -307,8 +307,11 @@ if (SLIC3R_ASAN)
 endif ()
 
 if (APPLE)
-    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
+    option(APPLE_AVAILABILITY_WERROR "Treat macOS availability warnings as errors" ON)
+    if (APPLE_AVAILABILITY_WERROR)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror=partial-availability -Werror=unguarded-availability -Werror=unguarded-availability-new")
+    endif ()
 endif ()
 
 if(MSVC)

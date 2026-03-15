@@ -3652,8 +3652,10 @@ void TabPrintObject::notify_changed(ObjectBase * object)
 
 //BBS: GUI refactor
 
+static std::string layer_height = "layer_height";
+
 TabPrintPart::TabPrintPart(ParamsPanel* parent) :
-    TabPrintModel(parent, PrintRegionConfig().keys())
+    TabPrintModel(parent, concat({ layer_height }, PrintRegionConfig().keys()))
 {
     m_parent_tab = wxGetApp().get_model_tab();
 }
@@ -3664,7 +3666,23 @@ void TabPrintPart::notify_changed(ObjectBase * object)
     wxGetApp().obj_list()->object_config_options_changed({vol->get_object(), vol});
 }
 
-static std::string layer_height = "layer_height";
+void TabPrintPart::update_custom_dirty(std::vector<std::string> &dirty_options, std::vector<std::string> &nonsys_options)
+{
+    TabPrintModel::update_custom_dirty(dirty_options, nonsys_options);
+    auto option = m_parent_tab->get_config()->option(layer_height);
+    for (auto config : m_object_configs) {
+        if (!config.second->has(layer_height)) {
+            config.second->set_key_value(layer_height, option->clone());
+            dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), layer_height), dirty_options.end());
+            nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), layer_height), nonsys_options.end());
+        }
+        else if (config.second->opt_float(layer_height) == option->getFloat()) {
+            dirty_options.erase(std::remove(dirty_options.begin(), dirty_options.end(), layer_height), dirty_options.end());
+            nonsys_options.erase(std::remove(nonsys_options.begin(), nonsys_options.end(), layer_height), nonsys_options.end());
+        }
+    }
+}
+
 TabPrintLayer::TabPrintLayer(ParamsPanel* parent) :
     TabPrintModel(parent, concat({ layer_height }, PrintRegionConfig().keys()))
 {

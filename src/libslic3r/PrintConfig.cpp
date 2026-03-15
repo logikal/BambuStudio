@@ -3285,7 +3285,7 @@ void PrintConfigDef::init_fff_params()
     def->gui_type = ConfigOptionDef::GUIType::i_enum_open;
     def->label = L("Sparse infill filament");
     def->category = L("Extruders");
-    def->tooltip = L("Filament to print internal sparse infill.");
+    def->tooltip = L("Filament to print internal sparse infill");
     def->min = 0;
     def->mode     = comDevelop;
     def->set_default_value(new ConfigOptionInt(0));

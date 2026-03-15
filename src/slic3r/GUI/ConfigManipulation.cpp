@@ -456,7 +456,8 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
             }
 
             timelapse_type = TimelapseType::tlTraditional;
-            if (new_conf.has("sparse_infill_density") && new_conf.option<ConfigOptionPercent>("sparse_infill_density") == 0) sparse_infill_density = 0;
+            if (new_conf.has("sparse_infill_density") && new_conf.option<ConfigOptionPercent>("sparse_infill_density") == 0)
+                sparse_infill_density = 0;
             if (new_conf.has("enable_support") && !new_conf.opt_bool("enable_support")) support = false;
         }
         else {

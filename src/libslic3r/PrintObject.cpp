@@ -3061,28 +3061,23 @@ static void apply_to_print_region_config(PrintRegionConfig &out, const DynamicPr
             out.wall_filament   .value = extruder;
         }
     // 2) Copy the rest of the values.
-    for (auto it = in.cbegin(); it != in.cend(); ++ it)
-        if (it->first != key_extruder)
-            if (ConfigOption* my_opt = out.option(it->first, false); my_opt != nullptr) {
-                if (one_of(it->first, keys_extruders)) {
-                    // Ignore "default" extruders.
-                    // BBS: 2025-10-20 skip these filament settings, they will be processed out of this func
-                    //int extruder = static_cast<const ConfigOptionInt*>(it->second.get())->value;
-                    //if (extruder > 0)
-                    //    my_opt->setInt(extruder);
-                } else {
-                    if (*my_opt != *(it->second)) {
-                        if (my_opt->is_scalar() || variant_index.empty() || (print_options_with_variant.find(it->first) == print_options_with_variant.end()))
-                            my_opt->set(it->second.get());
-                            //my_opt->set(it->second.get());
-                        else {
-                            ConfigOptionVectorBase* opt_vec_src = static_cast<ConfigOptionVectorBase*>(my_opt);
-                            const ConfigOptionVectorBase* opt_vec_dest = static_cast<const ConfigOptionVectorBase*>(it->second.get());
-                            opt_vec_src->set_to_index(opt_vec_dest, variant_index, 1);
-                        }
-                    }
+    for (auto it = in.cbegin(); it != in.cend(); ++ it) {
+        if (it->first == key_extruder)
+            continue;
+        if (ConfigOption *my_opt = out.option(it->first, false); my_opt != nullptr) {
+            if (one_of(it->first, keys_extruders))
+                continue;
+            if (*my_opt != *(it->second)) {
+                if (my_opt->is_scalar() || variant_index.empty() || (print_options_with_variant.find(it->first) == print_options_with_variant.end()))
+                    my_opt->set(it->second.get());
+                else {
+                    ConfigOptionVectorBase* opt_vec_src = static_cast<ConfigOptionVectorBase*>(my_opt);
+                    const ConfigOptionVectorBase* opt_vec_dest = static_cast<const ConfigOptionVectorBase*>(it->second.get());
+                    opt_vec_src->set_to_index(opt_vec_dest, variant_index, 1);
                 }
             }
+        }
+    }
 }
 
 PrintRegionConfig region_config_from_model_volume(const PrintRegionConfig &default_or_parent_region_config, const DynamicPrintConfig *layer_range_config, const ModelVolume &volume, size_t num_extruders, std::vector<int>& variant_index)
@@ -3236,8 +3231,9 @@ std::vector<unsigned int> PrintObject::object_extruders() const
 bool PrintObject::update_layer_height_profile(const ModelObject &model_object, const SlicingParameters &slicing_parameters, std::vector<coordf_t> &layer_height_profile)
 {
     bool updated = false;
+    const bool has_part_layer_height = model_object_has_part_layer_height_overrides(model_object);
 
-    if (layer_height_profile.empty()) {
+    if (!has_part_layer_height && layer_height_profile.empty()) {
         // use the constructor because the assignement is crashing on ASAN OsX
         layer_height_profile = std::vector<coordf_t>(model_object.layer_height_profile.get());
 //        layer_height_profile = model_object.layer_height_profile;
@@ -3254,9 +3250,17 @@ bool PrintObject::update_layer_height_profile(const ModelObject &model_object, c
 
     bool not_match_flag = !slicing_parameters.has_raft(); // if there is raft layer_height_profile[1] could also be adaptive
     not_match_flag &= !layer_height_profile.empty() && (layer_height_profile[1] != slicing_parameters.first_object_layer_height);
-    if (layer_height_profile.empty() || not_match_flag) {
-        //layer_height_profile = layer_height_profile_adaptive(slicing_parameters, model_object.layer_config_ranges, model_object.volumes);
-        layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, model_object.layer_config_ranges);
+    if (layer_height_profile.empty() || not_match_flag || has_part_layer_height) {
+        if (has_part_layer_height) {
+            std::vector<EffectiveLayerHeightRange> ranges;
+            if (build_effective_layer_height_ranges(model_object, slicing_parameters, ranges, nullptr))
+                layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, effective_layer_config_ranges(ranges, slicing_parameters.layer_height));
+            else
+                layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, model_object.layer_config_ranges);
+        } else {
+            //layer_height_profile = layer_height_profile_adaptive(slicing_parameters, model_object.layer_config_ranges, model_object.volumes);
+            layer_height_profile = layer_height_profile_from_ranges(slicing_parameters, model_object.layer_config_ranges);
+        }
         updated = true;
     }
 

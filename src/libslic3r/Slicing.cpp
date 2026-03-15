@@ -1,8 +1,11 @@
+#include <algorithm>
+#include <cmath>
 #include <limits>
 
 #include "libslic3r.h"
 #include "Slicing.hpp"
 #include "SlicingAdaptive.hpp"
+#include "I18N.hpp"
 #include "PrintConfig.hpp"
 #include "Model.hpp"
 
@@ -18,12 +21,44 @@
     #include <cassert>
 #endif
 
+// Mark string for localization and translate.
+#define L(s) Slic3r::I18N::translate(s)
+
 namespace Slic3r
 {
 
 static const coordf_t MIN_LAYER_HEIGHT = 0.01;
 static const coordf_t MIN_LAYER_HEIGHT_DEFAULT = 0.07;
 static const double LAYER_HEIGHT_CHANGE_STEP = 0.04;
+
+namespace {
+
+struct VolumeLayerHeightInfo
+{
+    const ModelVolume         *volume { nullptr };
+    t_layer_height_range       z_range { 0.f, 0.f };
+    bool                       has_override { false };
+    coordf_t                   override_height { 0 };
+    std::vector<unsigned int>  extruders;
+};
+
+static coordf_t layer_height_at_z(const t_layer_config_ranges &layer_config_ranges, coordf_t default_layer_height, coordf_t z)
+{
+    for (const auto &range_and_config : layer_config_ranges) {
+        if (range_and_config.first.first - EPSILON <= z && z < range_and_config.first.second - EPSILON) {
+            if (const auto *opt = range_and_config.second.option("layer_height"))
+                return opt->getFloat();
+        }
+    }
+    return default_layer_height;
+}
+
+static bool same_extruders(const std::vector<unsigned int> &lhs, const std::vector<unsigned int> &rhs)
+{
+    return lhs.size() == rhs.size() && std::equal(lhs.begin(), lhs.end(), rhs.begin());
+}
+
+}
 
 // Minimum layer height for the variable layer height algorithm.
 inline coordf_t min_layer_height_from_nozzle(const PrintConfig &print_config, int idx_nozzle)
@@ -57,6 +92,139 @@ coordf_t Slicing::max_layer_height_from_nozzle(const DynamicPrintConfig &print_c
     coordf_t max_layer_height = print_config.opt_float_nullable("max_layer_height", idx_nozzle - 1);
     coordf_t nozzle_dmr       = print_config.opt_float_nullable("nozzle_diameter", idx_nozzle - 1);
     return std::max(min_layer_height, (max_layer_height == 0.) ? (0.75 * nozzle_dmr) : max_layer_height);
+}
+
+bool model_object_has_part_layer_height_overrides(const ModelObject &model_object)
+{
+    return std::any_of(model_object.volumes.begin(), model_object.volumes.end(), [](const ModelVolume *volume) {
+        return volume->is_model_part() && volume->config.has("layer_height");
+    });
+}
+
+bool build_effective_layer_height_ranges(
+    const ModelObject                    &model_object,
+    const SlicingParameters              &slicing_params,
+    std::vector<EffectiveLayerHeightRange> &out,
+    std::string                          *error)
+{
+    out.clear();
+
+    const bool has_part_overrides = model_object_has_part_layer_height_overrides(model_object);
+    if (!has_part_overrides)
+        return true;
+
+    if (!model_object.layer_height_profile.empty()) {
+        if (error != nullptr)
+            *error = L("Per-part layer height overrides are not supported together with custom layer height painting.");
+        return false;
+    }
+
+    if (model_object.instances.empty())
+        return true;
+
+    const coordf_t object_height = slicing_params.object_print_z_height();
+    if (object_height <= EPSILON)
+        return true;
+
+    const Transform3d &inst_matrix = model_object.instances.front()->get_transformation().get_matrix(true);
+    coordf_t object_z_min = std::numeric_limits<coordf_t>::max();
+    std::vector<VolumeLayerHeightInfo> volumes;
+    std::vector<coordf_t> boundaries { 0.f, object_height };
+    volumes.reserve(model_object.volumes.size());
+
+    for (const ModelVolume *volume : model_object.volumes) {
+        if (!volume->is_model_part())
+            continue;
+
+        BoundingBoxf3 bbox = volume->mesh().transformed_bounding_box(inst_matrix * volume->get_matrix());
+        object_z_min = std::min(object_z_min, coordf_t(bbox.min.z()));
+        VolumeLayerHeightInfo info;
+        info.volume = volume;
+        info.z_range = { coordf_t(bbox.min.z()), coordf_t(bbox.max.z()) };
+        info.has_override = volume->config.has("layer_height");
+        if (info.has_override)
+            info.override_height = volume->config.option("layer_height")->getFloat();
+        for (int extruder : volume->get_extruders()) {
+            if (extruder > 0)
+                info.extruders.push_back(unsigned(extruder - 1));
+        }
+        sort_remove_duplicates(info.extruders);
+        volumes.emplace_back(std::move(info));
+    }
+
+    if (!std::isfinite(object_z_min))
+        object_z_min = 0.f;
+
+    for (VolumeLayerHeightInfo &info : volumes) {
+        info.z_range.first  = std::max<coordf_t>(0.f, info.z_range.first - object_z_min);
+        info.z_range.second = std::min(object_height, info.z_range.second - object_z_min);
+        if (info.z_range.second - info.z_range.first > EPSILON) {
+            boundaries.push_back(info.z_range.first);
+            boundaries.push_back(info.z_range.second);
+        }
+    }
+
+    std::sort(boundaries.begin(), boundaries.end());
+    boundaries.erase(std::unique(boundaries.begin(), boundaries.end(), [](coordf_t lhs, coordf_t rhs) { return std::abs(lhs - rhs) <= EPSILON; }), boundaries.end());
+
+    for (size_t i = 1; i < boundaries.size(); ++i) {
+        coordf_t lo = boundaries[i - 1];
+        coordf_t hi = boundaries[i];
+        if (hi - lo <= EPSILON)
+            continue;
+
+        coordf_t z_mid = 0.5f * (lo + hi);
+        coordf_t base_height = layer_height_at_z(model_object.layer_config_ranges, slicing_params.layer_height, z_mid);
+        coordf_t effective_height = base_height;
+        bool have_active_volume = false;
+        std::vector<unsigned int> active_extruders;
+
+        for (const VolumeLayerHeightInfo &info : volumes) {
+            if (z_mid + EPSILON < info.z_range.first || z_mid >= info.z_range.second - EPSILON)
+                continue;
+
+            coordf_t volume_height = info.has_override ? info.override_height : base_height;
+            if (!have_active_volume) {
+                effective_height = volume_height;
+                have_active_volume = true;
+            } else if (volume_height < effective_height) {
+                // A same-object mixed-height slab runs on the finest active layer height.
+                effective_height = volume_height;
+            }
+
+            append(active_extruders, info.extruders);
+        }
+
+        if (!have_active_volume)
+            continue;
+
+        sort_remove_duplicates(active_extruders);
+        if (!out.empty() &&
+            std::abs(out.back().layer_height - effective_height) <= EPSILON &&
+            same_extruders(out.back().active_extruders, active_extruders) &&
+            std::abs(out.back().range.second - lo) <= EPSILON) {
+            out.back().range.second = hi;
+        } else {
+            out.push_back({ { lo, hi }, effective_height, std::move(active_extruders) });
+        }
+    }
+
+    return true;
+}
+
+t_layer_config_ranges effective_layer_config_ranges(
+    const std::vector<EffectiveLayerHeightRange> &ranges,
+    coordf_t                                      default_layer_height)
+{
+    t_layer_config_ranges out;
+    for (const EffectiveLayerHeightRange &range : ranges) {
+        if (std::abs(range.layer_height - default_layer_height) <= EPSILON)
+            continue;
+        ModelConfig config;
+        config.set_key_value("layer_height", new ConfigOptionFloat(range.layer_height));
+        out.emplace(range.range, std::move(config));
+    }
+    return out;
 }
 
 SlicingParameters SlicingParameters::create_from_config(

@@ -194,6 +194,25 @@ public:
     std::vector<std::vector<DynamicPrintConfig>> get_extruder_filament_info() const;
 
     std::set<std::string> get_printer_names_by_printer_type_and_nozzle(const std::string &printer_type, std::string nozzle_diameter_str, bool system_only = true);
+    std::string           get_filament_alias_for_preset(const std::string &preset_name) const;
+    std::vector<std::string> get_filament_preset_names_by_alias_for_current_printer(const std::string &alias, bool compatible_only = true) const;
+    std::string           get_filament_slot_nozzle_label(size_t filament_idx,
+                                                         const std::vector<int> &filament_maps,
+                                                         const std::vector<double> *nozzle_diameters_override = nullptr) const;
+    std::string           get_filament_preset_nozzle_label(const std::string &preset_name) const;
+    std::string           get_filament_preset_name_by_alias_for_slot(const std::string &alias,
+                                                                     size_t filament_idx,
+                                                                     const std::vector<int> &filament_maps,
+                                                                     const std::vector<double> *nozzle_diameters_override = nullptr,
+                                                                     bool compatible_only = true) const;
+    bool                  filament_preset_matches_slot_nozzle(const std::string &preset_name,
+                                                              size_t filament_idx,
+                                                              const std::vector<int> &filament_maps,
+                                                              const std::vector<double> *nozzle_diameters_override = nullptr) const;
+    bool                  normalize_filament_presets_for_slot_nozzles(const std::vector<int> &filament_maps,
+                                                                      const std::vector<double> *nozzle_diameters_override = nullptr);
+    void                  set_filament_variant_manual_override(size_t idx, bool is_manual_override);
+    bool                  is_filament_variant_manual_override(size_t idx) const;
     bool                  check_filament_temp_equation_by_printer_type_and_nozzle_for_mas_tray(const std::string &printer_type,
                                                                                                std::string &      nozzle_diameter_str,
                                                                                                std::string &      setting_id,
@@ -220,6 +239,7 @@ public:
 
     std::vector<std::map<int, int>> extruder_ams_counts;
     ExtruderNozzleStat extruder_nozzle_stat;
+    std::vector<bool> filament_variant_manual_overrides;
     // Calibrate
     Preset const * calibrate_printer = nullptr;
     std::set<Preset const *> calibrate_filaments;

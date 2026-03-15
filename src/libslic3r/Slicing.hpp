@@ -133,6 +133,25 @@ inline bool equal_layering(const SlicingParameters &sp1, const SlicingParameters
 typedef std::pair<coordf_t,coordf_t> t_layer_height_range;
 typedef std::map<t_layer_height_range, ModelConfig> t_layer_config_ranges;
 
+struct EffectiveLayerHeightRange
+{
+    t_layer_height_range      range;
+    coordf_t                  layer_height { 0 };
+    std::vector<unsigned int> active_extruders;
+};
+
+extern bool model_object_has_part_layer_height_overrides(const ModelObject &model_object);
+
+extern bool build_effective_layer_height_ranges(
+    const ModelObject          &model_object,
+    const SlicingParameters    &slicing_params,
+    std::vector<EffectiveLayerHeightRange> &out,
+    std::string                *error = nullptr);
+
+extern t_layer_config_ranges effective_layer_config_ranges(
+    const std::vector<EffectiveLayerHeightRange> &ranges,
+    coordf_t                                      default_layer_height);
+
 extern std::vector<coordf_t> layer_height_profile_from_ranges(
     const SlicingParameters     &slicing_params,
     const t_layer_config_ranges &layer_config_ranges);
