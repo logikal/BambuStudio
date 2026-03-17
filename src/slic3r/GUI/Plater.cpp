@@ -1044,6 +1044,265 @@ static struct DynamicFilamentList : DynamicList
     }
 } dynamic_filament_list;
 
+namespace {
+
+static constexpr const char *process_auto_prefix   = "__auto__:";
+static constexpr const char *process_manual_prefix = "__manual__:";
+
+static bool is_feature_process_opt(const std::string &opt_key)
+{
+    return opt_key == "wall_process_preset_name" ||
+           opt_key == "sparse_infill_process_preset_name" ||
+           opt_key == "solid_infill_process_preset_name" ||
+           opt_key == "support_process_preset_name" ||
+           opt_key == "support_interface_process_preset_name";
+}
+
+static std::string feature_process_mode_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_mode";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_mode";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_mode";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_mode";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_mode";
+    return {};
+}
+
+static std::string feature_process_alias_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_preset_alias";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_preset_alias";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_preset_alias";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_preset_alias";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_preset_alias";
+    return {};
+}
+
+static std::string feature_process_filament_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_filament";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_filament";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_filament";
+    if (opt_key == "support_process_preset_name")
+        return "support_filament";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_filament";
+    return {};
+}
+
+static std::vector<int> current_process_filament_maps()
+{
+    auto *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return {};
+
+    PartPlate *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+    if (plate != nullptr)
+        return plate->get_real_filament_maps(preset_bundle->project_config);
+
+    if (const auto *opt = preset_bundle->project_config.option<ConfigOptionInts>("filament_map"))
+        return opt->values;
+    return {};
+}
+
+static Tab *find_ancestor_tab(wxWindow *window)
+{
+    for (wxWindow *current = window; current != nullptr; current = current->GetParent()) {
+        if (auto *tab = dynamic_cast<Tab *>(current))
+            return tab;
+    }
+    return nullptr;
+}
+
+static const DynamicPrintConfig *feature_process_context(wxWindow *window)
+{
+    if (Tab *tab = find_ancestor_tab(window))
+        return tab->get_config();
+    if (auto *config = wxGetApp().obj_list()->config())
+        return &config->get();
+    return nullptr;
+}
+
+static size_t resolve_feature_process_filament_slot(const DynamicPrintConfig &config, const std::string &opt_key)
+{
+    const std::string filament_key = feature_process_filament_key(opt_key);
+    int filament_idx = 0;
+    if (!filament_key.empty()) {
+        if (const auto *filament_opt = config.option<ConfigOptionInt>(filament_key))
+            filament_idx = filament_opt->value;
+    }
+    if (filament_idx <= 0) {
+        if (const auto *extruder_opt = config.option<ConfigOptionInt>("extruder"))
+            filament_idx = extruder_opt->value;
+    }
+    return size_t(std::max(0, filament_idx - 1));
+}
+
+static wxString format_process_family_label(const std::string &alias, const std::string &nozzle_label)
+{
+    if (alias.empty())
+        return {};
+    if (nozzle_label.empty())
+        return from_u8(alias);
+    return from_u8(alias + " · " + nozzle_label);
+}
+
+static wxString format_process_version_label(const std::string &preset_name, const std::string &nozzle_label)
+{
+    if (!nozzle_label.empty())
+        return from_u8("  Use " + nozzle_label + " profile");
+    return from_u8("  " + preset_name);
+}
+
+struct FeatureProcessChoiceRow
+{
+    wxString     label;
+    std::string  stored_value;
+};
+
+class DynamicFeatureProcessList : public DynamicList
+{
+public:
+    explicit DynamicFeatureProcessList(std::string opt_key) : m_opt_key(std::move(opt_key)) {}
+
+    void apply_on(Choice *c) override
+    {
+        if (c == nullptr || c->window == nullptr)
+            return;
+
+        auto *cb = dynamic_cast<ComboBox *>(c->window);
+        if (cb == nullptr)
+            return;
+
+        this->rebuild(c);
+
+        const wxString old_selection = cb->GetStringSelection();
+        const wxString old_value = cb->GetValue();
+        cb->Clear();
+        for (const auto &row : m_rows)
+            cb->Append(row.label);
+
+        const int idx = index_of(old_value);
+        if (idx >= 0 && idx < int(cb->GetCount())) {
+            cb->SetSelection(idx);
+        } else {
+            int old_label_idx = cb->FindString(old_selection);
+            cb->SetSelection(old_label_idx == wxNOT_FOUND ? 0 : old_label_idx);
+        }
+    }
+
+    wxString get_value(int index) override
+    {
+        if (index < 0 || index >= int(m_rows.size()))
+            return {};
+        return from_u8(m_rows[index].stored_value);
+    }
+
+    int index_of(wxString value) override
+    {
+        const std::string current_value = into_u8(value);
+        const DynamicPrintConfig *context = feature_process_context(m_last_window);
+        const std::string mode_key = feature_process_mode_key(m_opt_key);
+        const std::string alias_key = feature_process_alias_key(m_opt_key);
+        const std::string mode = (context != nullptr && context->has(mode_key)) ? context->opt_string(mode_key) : "inherit";
+        const std::string alias = (context != nullptr && context->has(alias_key)) ? context->opt_string(alias_key) : std::string();
+
+        std::string desired_value;
+        if (mode == "auto" && !alias.empty())
+            desired_value = std::string(process_auto_prefix) + alias;
+        else if (mode == "manual" && !current_value.empty())
+            desired_value = std::string(process_manual_prefix) + current_value;
+        else if (!current_value.empty())
+            desired_value = current_value;
+
+        for (size_t i = 0; i < m_rows.size(); ++i)
+            if (m_rows[i].stored_value == desired_value)
+                return int(i);
+
+        if (!current_value.empty()) {
+            for (size_t i = 0; i < m_rows.size(); ++i)
+                if (m_rows[i].stored_value == std::string(process_manual_prefix) + current_value)
+                    return int(i);
+        }
+
+        return 0;
+    }
+
+private:
+    void rebuild(Choice *choice)
+    {
+        m_last_window = choice != nullptr ? choice->window : nullptr;
+        m_rows.clear();
+        m_rows.push_back({ _L("Same as object"), "" });
+
+        if (choice == nullptr || !is_feature_process_opt(m_opt_key))
+            return;
+
+        auto *preset_bundle = wxGetApp().preset_bundle;
+        const DynamicPrintConfig *context = feature_process_context(choice->window);
+        if (preset_bundle == nullptr || context == nullptr)
+            return;
+
+        const std::vector<int> filament_maps = current_process_filament_maps();
+        const size_t filament_slot = resolve_feature_process_filament_slot(*context, m_opt_key);
+        std::set<std::string> seen_aliases;
+
+        for (const Preset &preset : preset_bundle->prints.get_presets()) {
+            if (preset.is_default)
+                continue;
+            if (!preset.is_visible && !preset.is_compatible)
+                continue;
+
+            const std::string alias = preset_bundle->get_print_alias_for_preset(preset.name);
+            if (alias.empty() || !seen_aliases.insert(alias).second)
+                continue;
+
+            std::string exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, true);
+            if (exact.empty())
+                exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
+
+            const std::string family_nozzle = exact.empty() ? std::string() : preset_bundle->get_print_preset_nozzle_label(exact);
+            m_rows.push_back({ format_process_family_label(alias, family_nozzle),
+                               std::string(process_auto_prefix) + alias });
+
+            const std::vector<std::string> variants = preset_bundle->get_print_preset_names_by_alias_for_current_printer(alias, false);
+            std::set<std::string> seen_variants;
+            for (const std::string &variant_name : variants) {
+                if (!seen_variants.insert(variant_name).second)
+                    continue;
+                m_rows.push_back({ format_process_version_label(variant_name, preset_bundle->get_print_preset_nozzle_label(variant_name)),
+                                   std::string(process_manual_prefix) + variant_name });
+            }
+        }
+    }
+
+private:
+    std::string                    m_opt_key;
+    std::vector<FeatureProcessChoiceRow> m_rows;
+    wxWindow                      *m_last_window { nullptr };
+};
+
+} // namespace
+
+static DynamicFeatureProcessList dynamic_wall_process_list("wall_process_preset_name");
+static DynamicFeatureProcessList dynamic_sparse_infill_process_list("sparse_infill_process_preset_name");
+static DynamicFeatureProcessList dynamic_solid_infill_process_list("solid_infill_process_preset_name");
+static DynamicFeatureProcessList dynamic_support_process_list("support_process_preset_name");
+static DynamicFeatureProcessList dynamic_support_interface_process_list("support_interface_process_preset_name");
+
 class AMSCountPopupWindow : public PopupWindow
 {
 public:
@@ -1855,6 +2114,11 @@ Sidebar::Sidebar(Plater *parent)
     Choice::register_dynamic_list("wall_filament", &dynamic_filament_list);
     Choice::register_dynamic_list("sparse_infill_filament", &dynamic_filament_list);
     Choice::register_dynamic_list("solid_infill_filament", &dynamic_filament_list);
+    Choice::register_dynamic_list("wall_process_preset_name", &dynamic_wall_process_list);
+    Choice::register_dynamic_list("sparse_infill_process_preset_name", &dynamic_sparse_infill_process_list);
+    Choice::register_dynamic_list("solid_infill_process_preset_name", &dynamic_solid_infill_process_list);
+    Choice::register_dynamic_list("support_process_preset_name", &dynamic_support_process_list);
+    Choice::register_dynamic_list("support_interface_process_preset_name", &dynamic_support_interface_process_list);
 
     p->scrolled = new wxPanel(this);
     //    p->scrolled->SetScrollbars(0, 100, 1, 2); // ys_DELETE_after_testing. pixelsPerUnitY = 100

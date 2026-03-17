@@ -17,6 +17,7 @@
 
 // Print now includes tbb, and tbb includes Windows. This breaks compilation of wxWidgets if included before wx.
 #include "libslic3r/Print.hpp"
+#include "libslic3r/PresetBundle.hpp"
 #include "libslic3r/SLAPrint.hpp"
 #include "libslic3r/Utils.hpp"
 #include "libslic3r/GCode/PostProcessor.hpp"
@@ -27,9 +28,11 @@
 #include <cassert>
 #include <stdexcept>
 #include <cctype>
+#include <cmath>
 
 #include <boost/format/format_fwd.hpp>
 #include <boost/filesystem/operations.hpp>
+#include <boost/algorithm/string/predicate.hpp>
 #include <boost/log/trivial.hpp>
 #include <boost/nowide/cstdio.hpp>
 #include "I18N.hpp"
@@ -38,6 +41,307 @@
 #include "slic3r/GUI/Plater.hpp"
 
 namespace Slic3r {
+
+namespace {
+
+static std::string feature_process_mode_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_mode";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_mode";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_mode";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_mode";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_mode";
+    return {};
+}
+
+static std::string feature_process_alias_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_preset_alias";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_preset_alias";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_preset_alias";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_preset_alias";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_preset_alias";
+    return {};
+}
+
+static std::string feature_process_filament_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_filament";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_filament";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_filament";
+    if (opt_key == "support_process_preset_name")
+        return "support_filament";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_filament";
+    return {};
+}
+
+static std::string feature_process_role_label(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "Walls";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "Sparse infill";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "Solid/top surfaces";
+    if (opt_key == "support_process_preset_name")
+        return "Support base";
+    if (opt_key == "support_interface_process_preset_name")
+        return "Support interface";
+    return "Feature";
+}
+
+static const std::vector<std::string> &feature_process_projection_keys(const std::string &opt_key)
+{
+    static const std::vector<std::string> wall_keys {
+        "outer_wall_line_width", "inner_wall_line_width", "outer_wall_speed", "inner_wall_speed", "wall_loops",
+        "detect_overhang_wall", "enable_overhang_speed", "overhang_1_4_speed", "overhang_2_4_speed",
+        "overhang_3_4_speed", "overhang_4_4_speed", "overhang_totally_speed", "small_perimeter_speed",
+        "small_perimeter_threshold", "precise_outer_wall"
+    };
+    static const std::vector<std::string> sparse_infill_keys {
+        "sparse_infill_density", "sparse_infill_pattern", "sparse_infill_line_width", "sparse_infill_speed",
+        "fill_multiline", "sparse_infill_anchor", "sparse_infill_anchor_max", "minimum_sparse_infill_area",
+        "infill_wall_overlap", "infill_direction", "infill_shift_step", "infill_rotate_step",
+        "symmetric_infill_y_axis", "sparse_infill_lattice_angle_1", "sparse_infill_lattice_angle_2",
+        "infill_combination"
+    };
+    static const std::vector<std::string> solid_infill_keys {
+        "top_surface_pattern", "bottom_surface_pattern", "top_surface_density", "bottom_surface_density",
+        "internal_solid_infill_pattern", "internal_solid_infill_line_width", "top_surface_line_width",
+        "internal_solid_infill_speed", "top_surface_speed", "bridge_angle", "bridge_speed", "bridge_flow"
+    };
+    static const std::vector<std::string> support_keys {
+        "support_line_width", "support_speed", "support_angle", "support_base_pattern",
+        "support_base_pattern_spacing", "support_expansion", "support_style"
+    };
+    static const std::vector<std::string> support_interface_keys {
+        "support_interface_speed", "support_interface_top_layers", "support_interface_bottom_layers",
+        "support_interface_spacing", "support_interface_pattern", "support_interface_loop_pattern",
+        "support_interface_not_for_body", "support_bottom_interface_spacing"
+    };
+
+    if (opt_key == "wall_process_preset_name")
+        return wall_keys;
+    if (opt_key == "sparse_infill_process_preset_name")
+        return sparse_infill_keys;
+    if (opt_key == "solid_infill_process_preset_name")
+        return solid_infill_keys;
+    if (opt_key == "support_process_preset_name")
+        return support_keys;
+    return support_interface_keys;
+}
+
+static void set_feature_process_error(StringObjectException &error,
+                                      const ModelObject &object,
+                                      const std::string &opt_key,
+                                      const std::string &message)
+{
+    if (!error.string.empty())
+        return;
+    error.string = message;
+    error.object = &object;
+    error.opt_key = opt_key;
+    error.type = STRING_EXCEPT_NOT_DEFINED;
+}
+
+static int resolve_scope_int_option(const DynamicPrintConfig &full_config,
+                                    const ModelObject &object,
+                                    const ModelVolume *volume,
+                                    const ModelConfig *layer_config,
+                                    const std::string &key)
+{
+    if (layer_config != nullptr && layer_config->has(key))
+        return layer_config->opt_int(key);
+    if (volume != nullptr && volume->config.has(key))
+        return volume->config.opt_int(key);
+    if (object.config.has(key))
+        return object.config.opt_int(key);
+    return full_config.has(key) ? full_config.opt_int(key) : 0;
+}
+
+static double resolve_scope_float_option(const DynamicPrintConfig &full_config,
+                                         const ModelObject &object,
+                                         const ModelVolume *volume,
+                                         const ModelConfig *layer_config,
+                                         const std::string &key)
+{
+    if (layer_config != nullptr && layer_config->has(key))
+        return layer_config->option(key)->getFloat();
+    if (volume != nullptr && volume->config.has(key))
+        return volume->config.option(key)->getFloat();
+    if (object.config.has(key))
+        return object.config.option(key)->getFloat();
+    return full_config.has(key) ? full_config.option(key)->getFloat() : 0.;
+}
+
+static size_t resolve_feature_process_filament_slot(const DynamicPrintConfig &full_config,
+                                                    const ModelObject &object,
+                                                    const ModelVolume *volume,
+                                                    const ModelConfig *layer_config,
+                                                    const std::string &opt_key)
+{
+    int filament_idx = resolve_scope_int_option(full_config, object, volume, layer_config, feature_process_filament_key(opt_key));
+    if (filament_idx <= 0)
+        filament_idx = resolve_scope_int_option(full_config, object, volume, layer_config, "extruder");
+    return size_t(std::max(0, filament_idx - 1));
+}
+
+static std::string scope_string_option(const ModelConfig &config, const std::string &key)
+{
+    if (const auto *opt = dynamic_cast<const ConfigOptionString *>(config.option(key)); opt != nullptr)
+        return opt->value;
+    return {};
+}
+
+static bool scope_has_feature_process_override(const ModelConfig &config, const std::string &opt_key)
+{
+    const std::string mode_key = feature_process_mode_key(opt_key);
+    const std::string alias_key = feature_process_alias_key(opt_key);
+    return (config.has(mode_key) && scope_string_option(config, mode_key) != "inherit") ||
+           (config.has(alias_key) && !scope_string_option(config, alias_key).empty()) ||
+           (config.has(opt_key) && !scope_string_option(config, opt_key).empty());
+}
+
+static void apply_projected_process_keys(ModelConfig &target_config,
+                                         const DynamicPrintConfig &preset_config,
+                                         const std::vector<std::string> &keys)
+{
+    for (const std::string &key : keys) {
+        if (const ConfigOption *opt = preset_config.option(key); opt != nullptr)
+            target_config.set_key_value(key, opt->clone());
+    }
+}
+
+static void resolve_feature_process_for_scope(ModelConfig &target_config,
+                                              const ModelObject &object,
+                                              const ModelVolume *volume,
+                                              const ModelConfig *layer_config,
+                                              const DynamicPrintConfig &full_config,
+                                              const std::vector<int> &filament_maps,
+                                              StringObjectException &validation_error)
+{
+    PresetBundle *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return;
+
+    for (const std::string &opt_key : { std::string("wall_process_preset_name"), std::string("sparse_infill_process_preset_name"),
+                                        std::string("solid_infill_process_preset_name"), std::string("support_process_preset_name"),
+                                        std::string("support_interface_process_preset_name") }) {
+        if (!scope_has_feature_process_override(target_config, opt_key))
+            continue;
+
+        const std::string mode_key = feature_process_mode_key(opt_key);
+        const std::string alias_key = feature_process_alias_key(opt_key);
+        const std::string mode = target_config.has(mode_key) ? scope_string_option(target_config, mode_key) : "inherit";
+        std::string alias = target_config.has(alias_key) ? scope_string_option(target_config, alias_key) : std::string();
+        std::string exact = target_config.has(opt_key) ? scope_string_option(target_config, opt_key) : std::string();
+        if (mode == "inherit" && exact.empty() && alias.empty())
+            continue;
+
+        const size_t filament_slot = resolve_feature_process_filament_slot(full_config, object, volume, layer_config, opt_key);
+        const std::string slot_nozzle_label = preset_bundle->get_filament_slot_nozzle_label(filament_slot, filament_maps);
+
+        if (mode == "auto") {
+            if (alias.empty())
+                alias = preset_bundle->get_print_alias_for_preset(exact);
+            exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, true);
+            if (exact.empty())
+                exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
+        }
+
+        if (exact.empty()) {
+            const std::string preset_label = alias.empty() ? feature_process_role_label(opt_key) : alias;
+            set_feature_process_error(
+                validation_error,
+                object,
+                opt_key,
+                (boost::format("%1% process preset '%2%' could not be resolved for the %3% nozzle used by this feature.")
+                    % feature_process_role_label(opt_key) % preset_label % slot_nozzle_label).str());
+            continue;
+        }
+
+        const Preset *preset = preset_bundle->prints.find_preset(exact, false);
+        if (preset == nullptr) {
+            set_feature_process_error(
+                validation_error,
+                object,
+                opt_key,
+                (boost::format("%1% process preset '%2%' is missing.") % feature_process_role_label(opt_key) % exact).str());
+            continue;
+        }
+
+        if (mode == "manual" && !preset_bundle->print_preset_matches_slot_nozzle(exact, filament_slot, filament_maps, nullptr)) {
+            set_feature_process_error(
+                validation_error,
+                object,
+                opt_key,
+                (boost::format("%1% process preset '%2%' targets a different nozzle than the %3% nozzle currently assigned to this feature.")
+                    % feature_process_role_label(opt_key) % exact % slot_nozzle_label).str());
+            continue;
+        }
+
+        const double scope_layer_height = resolve_scope_float_option(full_config, object, volume, layer_config, "layer_height");
+        const double preset_layer_height = preset->config.has("layer_height") ? preset->config.option("layer_height")->getFloat() : scope_layer_height;
+        if (std::abs(scope_layer_height - preset_layer_height) > EPSILON) {
+            set_feature_process_error(
+                validation_error,
+                object,
+                opt_key,
+                (boost::format("%1% process preset '%2%' requests layer height %3$.3f mm, but per-feature layer-height cadences are not supported yet for mixed-nozzle slicing. Use the object's layer height or split the feature into a separate object.")
+                    % feature_process_role_label(opt_key) % exact % preset_layer_height).str());
+            continue;
+        }
+
+        apply_projected_process_keys(target_config, preset->config, feature_process_projection_keys(opt_key));
+        target_config.set_key_value(opt_key, new ConfigOptionString(exact));
+    }
+}
+
+static Model preprocess_feature_process_presets(const Model &model,
+                                                const DynamicPrintConfig &full_config,
+                                                StringObjectException &validation_error)
+{
+    Model resolved_model(model);
+    const auto *filament_maps_opt = full_config.option<ConfigOptionInts>("filament_map");
+    const std::vector<int> filament_maps = filament_maps_opt ? filament_maps_opt->values : std::vector<int>{};
+
+    for (size_t object_idx = 0; object_idx < resolved_model.objects.size(); ++object_idx) {
+        ModelObject &resolved_object = *resolved_model.objects[object_idx];
+        const ModelObject &source_object = *model.objects[object_idx];
+
+        resolve_feature_process_for_scope(resolved_object.config, source_object, nullptr, nullptr, full_config, filament_maps, validation_error);
+
+        for (size_t volume_idx = 0; volume_idx < resolved_object.volumes.size(); ++volume_idx) {
+            ModelVolume &resolved_volume = *resolved_object.volumes[volume_idx];
+            const ModelVolume &source_volume = *source_object.volumes[volume_idx];
+            resolve_feature_process_for_scope(resolved_volume.config, source_object, &source_volume, nullptr, full_config, filament_maps, validation_error);
+        }
+
+        for (auto &range_and_config : resolved_object.layer_config_ranges) {
+            const auto source_it = source_object.layer_config_ranges.find(range_and_config.first);
+            const ModelConfig *source_layer_config = source_it == source_object.layer_config_ranges.end() ? nullptr : &source_it->second;
+            resolve_feature_process_for_scope(range_and_config.second, source_object, nullptr, source_layer_config, full_config, filament_maps, validation_error);
+        }
+    }
+
+    return resolved_model;
+}
+
+} // namespace
 
 bool SlicingProcessCompletedEvent::critical_error() const
 {
@@ -673,6 +977,8 @@ bool BackgroundSlicingProcess::empty() const
 StringObjectException BackgroundSlicingProcess::validate(StringObjectException *warning, Polygons* collison_polygons, std::vector<std::pair<Polygon, float>>* height_polygons)
 {
 	assert(m_print != nullptr);
+    if (!m_feature_process_validation_error.string.empty())
+        return m_feature_process_validation_error;
     return m_print->validate(warning, collison_polygons, height_polygons);
 }
 
@@ -685,7 +991,9 @@ Print::ApplyStatus BackgroundSlicingProcess::apply(const Model &model, const Dyn
 	// TODO: add partplate config
 	DynamicPrintConfig new_config = config;
 	new_config.apply(*m_current_plate->config());
-	Print::ApplyStatus invalidated = m_print->apply(model, new_config);
+    m_feature_process_validation_error = {};
+    Model resolved_model = preprocess_feature_process_presets(model, new_config, m_feature_process_validation_error);
+	Print::ApplyStatus invalidated = m_print->apply(resolved_model, new_config);
 	if ((invalidated & PrintBase::APPLY_STATUS_INVALIDATED) != 0 && m_print->technology() == ptFFF &&
 		!m_fff_print->is_step_done(psGCodeExport)) {
 		// Some FFF status was invalidated, and the G-code was not exported yet.

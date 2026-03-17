@@ -8,6 +8,7 @@
 #include "format.hpp"
 
 #include <algorithm>
+#include <array>
 #include <set>
 #include <fstream>
 #include <unordered_set>
@@ -1797,6 +1798,19 @@ static std::string normalize_filament_alias(const Preset &preset)
     return alias_name;
 }
 
+static std::string normalize_print_alias(const Preset &preset)
+{
+    if (!preset.alias.empty())
+        return preset.alias;
+
+    std::string alias_name = preset.name;
+    if (size_t end_pos = alias_name.find_first_of("@"); end_pos != std::string::npos) {
+        alias_name = alias_name.substr(0, end_pos);
+        boost::trim_right(alias_name);
+    }
+    return alias_name;
+}
+
 static bool printer_name_matches_model_and_nozzle(const std::string &printer_name, const std::string &printer_model, const std::string &nozzle_label)
 {
     return !printer_model.empty() &&
@@ -2002,6 +2016,96 @@ void PresetBundle::set_filament_variant_manual_override(size_t idx, bool is_manu
 bool PresetBundle::is_filament_variant_manual_override(size_t idx) const
 {
     return idx < this->filament_variant_manual_overrides.size() && this->filament_variant_manual_overrides[idx];
+}
+
+std::string PresetBundle::get_print_alias_for_preset(const std::string &preset_name) const
+{
+    if (const Preset *preset = this->prints.find_preset(preset_name, false); preset != nullptr)
+        return normalize_print_alias(*preset);
+    return preset_name;
+}
+
+std::vector<std::string> PresetBundle::get_print_preset_names_by_alias_for_current_printer(const std::string &alias, bool compatible_only) const
+{
+    std::vector<std::string> result;
+    for (const Preset &preset : this->prints.get_presets()) {
+        if (normalize_print_alias(preset) != alias)
+            continue;
+        if (compatible_only && !preset.is_compatible)
+            continue;
+        if (!preset.is_visible && !preset.is_compatible)
+            continue;
+        result.push_back(preset.name);
+    }
+    return result;
+}
+
+std::string PresetBundle::get_print_preset_nozzle_label(const std::string &preset_name) const
+{
+    const Preset *preset = this->prints.find_preset(preset_name, false);
+    if (preset == nullptr)
+        return {};
+
+    const std::string printer_model = this->printers.get_edited_preset().config.opt_string("printer_model");
+    auto *compatible_printers = dynamic_cast<const ConfigOptionStrings *>(preset->config.option("compatible_printers"));
+    if (compatible_printers != nullptr) {
+        for (const std::string &printer_name : compatible_printers->values) {
+            if (!printer_model.empty() && !boost::contains(printer_name, printer_model))
+                continue;
+            static const std::array<std::string, 4> nozzle_labels = { "0.2", "0.4", "0.6", "0.8" };
+            for (const std::string &label : nozzle_labels)
+                if (boost::contains(printer_name, label + " nozzle"))
+                    return label;
+        }
+    }
+
+    static const std::array<std::string, 4> nozzle_labels = { "0.2", "0.4", "0.6", "0.8" };
+    for (const std::string &label : nozzle_labels) {
+        if (boost::contains(preset->name, label + " nozzle") || boost::contains(preset->inherits(), label + " nozzle"))
+            return label;
+    }
+    return {};
+}
+
+std::string PresetBundle::get_print_preset_name_by_alias_for_filament(const std::string &alias,
+                                                                      size_t filament_idx,
+                                                                      const std::vector<int> &filament_maps,
+                                                                      const std::vector<double> *nozzle_diameters_override,
+                                                                      bool compatible_only) const
+{
+    const std::string printer_model = this->printers.get_edited_preset().config.opt_string("printer_model");
+    const std::string slot_nozzle_label = get_filament_slot_nozzle_label(filament_idx, filament_maps, nozzle_diameters_override);
+
+    const Preset *fallback = nullptr;
+    for (const std::string &preset_name : get_print_preset_names_by_alias_for_current_printer(alias, compatible_only)) {
+        const Preset *preset = this->prints.find_preset(preset_name, false);
+        if (preset == nullptr)
+            continue;
+        if (fallback == nullptr)
+            fallback = preset;
+        if (preset_matches_printer_model_and_nozzle(*preset, printer_model, slot_nozzle_label))
+            return preset->name;
+    }
+
+    return fallback ? fallback->name : std::string();
+}
+
+bool PresetBundle::print_preset_matches_slot_nozzle(const std::string &preset_name,
+                                                    size_t filament_idx,
+                                                    const std::vector<int> &filament_maps,
+                                                    const std::vector<double> *nozzle_diameters_override) const
+{
+    const Preset *preset = this->prints.find_preset(preset_name, false);
+    if (preset == nullptr)
+        return false;
+
+    const std::string printer_model = this->printers.get_edited_preset().config.opt_string("printer_model");
+    const std::string slot_nozzle_label = get_filament_slot_nozzle_label(filament_idx, filament_maps, nozzle_diameters_override);
+    const std::string preset_nozzle_label = get_print_preset_nozzle_label(preset_name);
+    if (preset_nozzle_label.empty())
+        return true;
+
+    return preset_matches_printer_model_and_nozzle(*preset, printer_model, slot_nozzle_label);
 }
 
 //BBS: get filament required hrc by filament type

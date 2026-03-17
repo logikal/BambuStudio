@@ -3290,6 +3290,25 @@ void PrintConfigDef::init_fff_params()
     def->mode     = comDevelop;
     def->set_default_value(new ConfigOptionInt(0));
 
+    def = this->add("sparse_infill_process_mode", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString("inherit"));
+
+    def = this->add("sparse_infill_process_preset_alias", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("sparse_infill_process_preset_name", coString);
+    def->label = L("Sparse infill process");
+    def->category = L("Extruders");
+    def->tooltip = L("Optional process preset override used for sparse infill when mixed-nozzle printing.");
+    def->gui_type = ConfigOptionDef::GUIType::select_open;
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("sparse_infill_line_width", coFloat);
     def->label = L("Sparse infill");
     def->category = L("Quality");
@@ -3874,6 +3893,25 @@ void PrintConfigDef::init_fff_params()
     def->min = 0;
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("wall_process_mode", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString("inherit"));
+
+    def = this->add("wall_process_preset_alias", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("wall_process_preset_name", coString);
+    def->label = L("Walls process");
+    def->category = L("Extruders");
+    def->tooltip = L("Optional process preset override used for walls when mixed-nozzle printing.");
+    def->gui_type = ConfigOptionDef::GUIType::select_open;
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
 
     def = this->add("inner_wall_line_width", coFloat);
     def->label = L("Inner wall");
@@ -4525,6 +4563,25 @@ void PrintConfigDef::init_fff_params()
     def->mode = comDevelop;
     def->set_default_value(new ConfigOptionInt(0));
 
+    def = this->add("solid_infill_process_mode", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString("inherit"));
+
+    def = this->add("solid_infill_process_preset_alias", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("solid_infill_process_preset_name", coString);
+    def->label = L("Solid infill process");
+    def->category = L("Extruders");
+    def->tooltip = L("Optional process preset override used for solid and top surfaces when mixed-nozzle printing.");
+    def->gui_type = ConfigOptionDef::GUIType::select_open;
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("internal_solid_infill_line_width", coFloat);
     def->label = L("Internal solid infill");
     def->category = L("Quality");
@@ -4785,6 +4842,25 @@ void PrintConfigDef::init_fff_params()
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionInt(0));
 
+    def = this->add("support_process_mode", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString("inherit"));
+
+    def = this->add("support_process_preset_alias", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("support_process_preset_name", coString);
+    def->label = L("Support base process");
+    def->category = L("Support");
+    def->tooltip = L("Optional process preset override used for support base and raft when mixed-nozzle printing.");
+    def->gui_type = ConfigOptionDef::GUIType::select_open;
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
     def = this->add("support_interface_not_for_body",coBool);
     def->label    = L("Avoid interface filament for base");
     def->category = L("Support");
@@ -4817,6 +4893,25 @@ void PrintConfigDef::init_fff_params()
     // BBS
     def->mode = comSimple;
     def->set_default_value(new ConfigOptionInt(0));
+
+    def = this->add("support_interface_process_mode", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString("inherit"));
+
+    def = this->add("support_interface_process_preset_alias", coString);
+    def->mode = comDevelop;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
+
+    def = this->add("support_interface_process_preset_name", coString);
+    def->label = L("Support interface process");
+    def->category = L("Support");
+    def->tooltip = L("Optional process preset override used for support interface when mixed-nozzle printing.");
+    def->gui_type = ConfigOptionDef::GUIType::select_open;
+    def->mode = comAdvanced;
+    def->cli = ConfigOptionDef::nocli;
+    def->set_default_value(new ConfigOptionString(""));
 
     auto support_interface_top_layers = def = this->add("support_interface_top_layers", coInt);
     def->gui_type = ConfigOptionDef::GUIType::i_enum_open;

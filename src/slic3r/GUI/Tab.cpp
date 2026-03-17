@@ -48,6 +48,8 @@
 
 #include "DeviceCore/DevManager.h"
 
+#include <cstring>
+
 #ifdef WIN32
 	#include <commctrl.h>
 #endif // WIN32
@@ -67,6 +69,182 @@ static std::pair<std::string, std::string> extruder_variant_keys[]{
     {}, {"", "filament_extruder_variant"},                   // Preset::TYPE_FILAMENT filament don't use id anymore
     {}, {"printer_extruder_id", "printer_extruder_variant"}, // Preset::TYPE_PRINTER
 };
+
+namespace {
+
+static constexpr const char *feature_process_auto_prefix   = "__auto__:";
+static constexpr const char *feature_process_manual_prefix = "__manual__:";
+
+static bool is_feature_process_preset_key(const std::string &opt_key)
+{
+    return opt_key == "wall_process_preset_name" ||
+           opt_key == "sparse_infill_process_preset_name" ||
+           opt_key == "solid_infill_process_preset_name" ||
+           opt_key == "support_process_preset_name" ||
+           opt_key == "support_interface_process_preset_name";
+}
+
+static bool is_feature_filament_key(const std::string &opt_key)
+{
+    return opt_key == "wall_filament" ||
+           opt_key == "sparse_infill_filament" ||
+           opt_key == "solid_infill_filament" ||
+           opt_key == "support_filament" ||
+           opt_key == "support_interface_filament";
+}
+
+static std::string feature_process_mode_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_mode";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_mode";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_mode";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_mode";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_mode";
+    return {};
+}
+
+static std::string feature_process_alias_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_process_preset_alias";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_process_preset_alias";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_process_preset_alias";
+    if (opt_key == "support_process_preset_name")
+        return "support_process_preset_alias";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_process_preset_alias";
+    return {};
+}
+
+static std::string feature_process_filament_key(const std::string &opt_key)
+{
+    if (opt_key == "wall_process_preset_name")
+        return "wall_filament";
+    if (opt_key == "sparse_infill_process_preset_name")
+        return "sparse_infill_filament";
+    if (opt_key == "solid_infill_process_preset_name")
+        return "solid_infill_filament";
+    if (opt_key == "support_process_preset_name")
+        return "support_filament";
+    if (opt_key == "support_interface_process_preset_name")
+        return "support_interface_filament";
+    return {};
+}
+
+static std::vector<int> current_feature_process_filament_maps()
+{
+    auto *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return {};
+
+    if (auto *plate = wxGetApp().plater()->get_partplate_list().get_curr_plate())
+        return plate->get_real_filament_maps(preset_bundle->project_config);
+
+    if (const auto *opt = preset_bundle->project_config.option<ConfigOptionInts>("filament_map"))
+        return opt->values;
+    return {};
+}
+
+static std::string any_to_std_string(const boost::any &value)
+{
+    if (value.type() == typeid(wxString))
+        return into_u8(boost::any_cast<wxString>(value));
+    if (value.type() == typeid(std::string))
+        return boost::any_cast<std::string>(value);
+    return {};
+}
+
+static size_t resolve_feature_process_filament_slot(const DynamicPrintConfig &config, const std::string &opt_key)
+{
+    const std::string filament_key = feature_process_filament_key(opt_key);
+    int filament_idx = 0;
+    if (!filament_key.empty()) {
+        if (const auto *filament_opt = config.option<ConfigOptionInt>(filament_key))
+            filament_idx = filament_opt->value;
+    }
+    if (filament_idx <= 0) {
+        if (const auto *extruder_opt = config.option<ConfigOptionInt>("extruder"))
+            filament_idx = extruder_opt->value;
+    }
+    return size_t(std::max(0, filament_idx - 1));
+}
+
+static void apply_feature_process_selection(DynamicPrintConfig &config, const std::string &opt_key, const boost::any &value)
+{
+    auto *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr || !is_feature_process_preset_key(opt_key))
+        return;
+
+    const std::string mode_key = feature_process_mode_key(opt_key);
+    const std::string alias_key = feature_process_alias_key(opt_key);
+    const std::vector<int> filament_maps = current_feature_process_filament_maps();
+    const size_t filament_slot = resolve_feature_process_filament_slot(config, opt_key);
+
+    std::string raw_value = any_to_std_string(value);
+    std::string mode = "inherit";
+    std::string alias;
+    std::string exact;
+
+    if (!raw_value.empty()) {
+        if (boost::starts_with(raw_value, feature_process_auto_prefix)) {
+            mode = "auto";
+            alias = raw_value.substr(std::strlen(feature_process_auto_prefix));
+            exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, true);
+            if (exact.empty())
+                exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
+        } else if (boost::starts_with(raw_value, feature_process_manual_prefix)) {
+            mode = "manual";
+            exact = raw_value.substr(std::strlen(feature_process_manual_prefix));
+            alias = preset_bundle->get_print_alias_for_preset(exact);
+        } else {
+            exact = raw_value;
+            alias = preset_bundle->get_print_alias_for_preset(exact);
+            const std::string auto_exact = alias.empty() ? std::string() :
+                preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
+            mode = (!auto_exact.empty() && auto_exact == exact) ? "auto" : "manual";
+        }
+    }
+
+    config.set_key_value(mode_key, new ConfigOptionString(mode));
+    config.set_key_value(alias_key, new ConfigOptionString(alias));
+    config.set_key_value(opt_key, new ConfigOptionString(exact));
+}
+
+static void normalize_auto_feature_process_selections(DynamicPrintConfig &config)
+{
+    auto *preset_bundle = wxGetApp().preset_bundle;
+    if (preset_bundle == nullptr)
+        return;
+
+    const std::vector<int> filament_maps = current_feature_process_filament_maps();
+    for (const std::string &opt_key : { std::string("wall_process_preset_name"), std::string("sparse_infill_process_preset_name"),
+                                        std::string("solid_infill_process_preset_name"), std::string("support_process_preset_name"),
+                                        std::string("support_interface_process_preset_name") }) {
+        const std::string mode_key = feature_process_mode_key(opt_key);
+        const std::string alias_key = feature_process_alias_key(opt_key);
+        if (!config.has(mode_key) || config.opt_string(mode_key) != "auto")
+            continue;
+
+        const std::string alias = config.has(alias_key) ? config.opt_string(alias_key) : std::string();
+        if (alias.empty())
+            continue;
+
+        const size_t filament_slot = resolve_feature_process_filament_slot(config, opt_key);
+        std::string exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, true);
+        if (exact.empty())
+            exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
+        config.set_key_value(opt_key, new ConfigOptionString(exact));
+    }
+}
+
+} // namespace
 
 void Tab::Highlighter::set_timer_owner(wxEvtHandler* owner, int timerid/* = wxID_ANY*/)
 {
@@ -1805,6 +1983,15 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
         return;
     }
 
+    if (is_feature_process_preset_key(opt_key)) {
+        DynamicPrintConfig new_conf = *m_config;
+        apply_feature_process_selection(new_conf, opt_key, value);
+        normalize_auto_feature_process_selections(new_conf);
+        m_config_manipulation.apply(m_config, &new_conf);
+        wxGetApp().plater()->update();
+        return;
+    }
+
     const bool is_fff = supports_printer_technology(ptFFF);
     ConfigOptionsGroup* og_freq_chng_params = wxGetApp().sidebar().og_freq_chng_params(is_fff);
     //BBS: GUI refactor
@@ -2142,6 +2329,12 @@ void Tab::on_value_change(const std::string& opt_key, const boost::any& value)
                 wxGetApp().plater()->update();
             }
         }
+    }
+
+    if (is_feature_filament_key(opt_key) || opt_key == "extruder") {
+        DynamicPrintConfig new_conf = *m_config;
+        normalize_auto_feature_process_selections(new_conf);
+        m_config_manipulation.apply(m_config, &new_conf);
     }
 
     string opt_key_without_idx = opt_key.substr(0, opt_key.find('#'));
@@ -2840,7 +3033,9 @@ void TabPrint::build()
 
         optgroup = page->new_optgroup(L("Support filament"), L"param_support_filament");
         optgroup->append_single_option_line("support_filament", "support#support-filament");
+        optgroup->append_single_option_line("support_process_preset_name", "support#support-filament");
         optgroup->append_single_option_line("support_interface_filament", "support#support-filament");
+        optgroup->append_single_option_line("support_interface_process_preset_name", "support#support-filament");
         optgroup->append_single_option_line("support_interface_not_for_body", "support#support-filament");
 
         //optgroup = page->new_optgroup(L("Options for support material and raft"));
@@ -2936,8 +3131,11 @@ void TabPrint::build()
         optgroup->append_single_option_line("interlocking_depth");
         optgroup->append_single_option_line("interlocking_boundary_avoidance");
         optgroup->append_single_option_line("sparse_infill_filament");
+        optgroup->append_single_option_line("sparse_infill_process_preset_name");
         optgroup->append_single_option_line("solid_infill_filament");
+        optgroup->append_single_option_line("solid_infill_process_preset_name");
         optgroup->append_single_option_line("wall_filament");
+        optgroup->append_single_option_line("wall_process_preset_name");
 
         optgroup = page->new_optgroup(L("G-code output"), L"param_gcode");
         optgroup->append_single_option_line("reduce_infill_retraction");
