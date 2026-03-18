@@ -698,6 +698,14 @@ void PrintConfigDef::init_common_params()
     def->min = 0;
     def->set_default_value(new ConfigOptionFloat(0.2));
 
+    def = this->add("feature_process_base_layer_height", coFloat);
+    def->label = L("Feature process base layer height");
+    def->tooltip = L("Internal helper used to preserve coarse sparse infill cadence when a feature process forces a finer wall layer height.");
+    def->sidetext = L("mm");
+    def->min = 0;
+    def->mode = comDevelop;
+    def->set_default_value(new ConfigOptionFloat(0.));
+
     def = this->add("printable_height", coFloat);
     def->label = L("Printable height");
     def->tooltip = L("Maximum printable height which is limited by mechanism of printer");

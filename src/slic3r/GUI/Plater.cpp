@@ -159,6 +159,7 @@
 #include "StepMeshDialog.hpp"
 #include "PurgeModeDialog.hpp"
 #include "FilamentMapDialog.hpp"
+#include "FeatureProcessHelper.hpp"
 
 #include "DeviceCore/DevFilaSystem.h"
 #include "DeviceCore/DevManager.h"
@@ -1274,14 +1275,20 @@ private:
             if (exact.empty())
                 exact = preset_bundle->get_print_preset_name_by_alias_for_filament(alias, filament_slot, filament_maps, nullptr, false);
 
-            const std::string family_nozzle = exact.empty() ? std::string() : preset_bundle->get_print_preset_nozzle_label(exact);
-            m_rows.push_back({ format_process_family_label(alias, family_nozzle),
-                               std::string(process_auto_prefix) + alias });
+            if (!exact.empty() && (m_opt_key != "wall_process_preset_name" ||
+                evaluate_wall_process_preset(*preset_bundle, *context, exact, filament_slot, filament_maps).supported())) {
+                const std::string family_nozzle = preset_bundle->get_print_preset_nozzle_label(exact);
+                m_rows.push_back({ format_process_family_label(alias, family_nozzle),
+                                   std::string(process_auto_prefix) + alias });
+            }
 
             const std::vector<std::string> variants = preset_bundle->get_print_preset_names_by_alias_for_current_printer(alias, false);
             std::set<std::string> seen_variants;
             for (const std::string &variant_name : variants) {
                 if (!seen_variants.insert(variant_name).second)
+                    continue;
+                if (m_opt_key == "wall_process_preset_name" &&
+                    !evaluate_wall_process_preset(*preset_bundle, *context, variant_name, filament_slot, filament_maps).supported())
                     continue;
                 m_rows.push_back({ format_process_version_label(variant_name, preset_bundle->get_print_preset_nozzle_label(variant_name)),
                                    std::string(process_manual_prefix) + variant_name });

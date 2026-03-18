@@ -3570,6 +3570,29 @@ void PrintObject::discover_horizontal_shells()
 #endif /* SLIC3R_DEBUG_SLICE_PROCESSING */
 }
 
+static double sparse_infill_combination_target_height(const PrintObject &object, const PrintRegion &region)
+{
+    const double nozzle_diameter = std::min(
+        object.print()->config().nozzle_diameter.get_at(region.config().sparse_infill_filament.value - 1),
+        object.print()->config().nozzle_diameter.get_at(region.config().solid_infill_filament.value - 1));
+
+    const double feature_process_base_layer_height = object.config().feature_process_base_layer_height.value;
+    if (feature_process_base_layer_height > object.config().layer_height.value + EPSILON)
+        return std::min(feature_process_base_layer_height, nozzle_diameter);
+
+    return region.config().infill_combination.value ? nozzle_diameter : 0.;
+}
+
+static double solid_surface_combination_target_height(const PrintObject &object, const PrintRegion &region)
+{
+    const double feature_process_base_layer_height = object.config().feature_process_base_layer_height.value;
+    if (feature_process_base_layer_height <= object.config().layer_height.value + EPSILON)
+        return 0.;
+
+    const double nozzle_diameter = object.print()->config().nozzle_diameter.get_at(region.config().solid_infill_filament.value - 1);
+    return std::min(feature_process_base_layer_height, nozzle_diameter);
+}
+
 // combine fill surfaces across layers to honor the "infill every N layers" option
 // Idempotence of this method is guaranteed by the fact that we don't remove things from
 // fill_surfaces but we only turn them into VOID surfaces, thus preserving the boundaries.
@@ -3578,18 +3601,15 @@ void PrintObject::combine_infill()
     // Work on each region separately.
     for (size_t region_id = 0; region_id < this->num_printing_regions(); ++ region_id) {
         const PrintRegion &region = this->printing_region(region_id);
-        //BBS
-        const bool enable_combine_infill = region.config().infill_combination.value;
-        if (enable_combine_infill == false || region.config().sparse_infill_density == 0.)
-            continue;
-        // Limit the number of combined layers to the maximum height allowed by this regions' nozzle.
-        //FIXME limit the layer height to max_layer_height
-        double nozzle_diameter = std::min(
-            this->print()->config().nozzle_diameter.get_at(region.config().sparse_infill_filament.value - 1),
-            this->print()->config().nozzle_diameter.get_at(region.config().solid_infill_filament.value - 1));
-        // define the combinations
-        std::vector<size_t> combine(m_layers.size(), 0);
-        {
+        const double target_height = sparse_infill_combination_target_height(*this, region);
+        const bool feature_process_target =
+            this->config().feature_process_base_layer_height.value > this->config().layer_height.value + EPSILON;
+
+        auto build_combine_plan = [this, feature_process_target](double plan_target_height) {
+            std::vector<size_t> combine(m_layers.size(), 0);
+            if (plan_target_height <= EPSILON)
+                return combine;
+
             double current_height = 0.;
             size_t num_layers = 0;
             for (size_t layer_idx = 0; layer_idx < m_layers.size(); ++ layer_idx) {
@@ -3598,11 +3618,12 @@ void PrintObject::combine_infill()
                 if (layer->id() == 0)
                     // Skip first print layer (which may not be first layer in array because of raft).
                     continue;
-                // Check whether the combination of this layer with the lower layers' buffer
-                // would exceed max layer height or max combined layer count.
-                // BBS: automatically calculate how many layers should be combined
-                if (current_height + layer->height >= nozzle_diameter + EPSILON) {
-                    // Append combination to lower layer.
+
+                const double next_height = current_height + layer->height;
+                const bool exceeds_target = feature_process_target ?
+                    (next_height > plan_target_height + EPSILON) :
+                    (next_height >= plan_target_height + EPSILON);
+                if (exceeds_target) {
                     combine[layer_idx - 1] = num_layers;
                     current_height = 0.;
                     num_layers = 0;
@@ -3611,74 +3632,207 @@ void PrintObject::combine_infill()
                 ++ num_layers;
             }
 
-            // Append lower layers (if any) to uppermost layer.
             combine[m_layers.size() - 1] = num_layers;
-        }
+            return combine;
+        };
 
-        // loop through layers to which we have assigned layers to combine
-        for (size_t layer_idx = 0; layer_idx < m_layers.size(); ++ layer_idx) {
-            m_print->throw_if_canceled();
-            size_t num_layers = combine[layer_idx];
-			if (num_layers <= 1)
-                continue;
-            // Get all the LayerRegion objects to be combined.
-            std::vector<LayerRegion*> layerms;
-            layerms.reserve(num_layers);
-			for (size_t i = layer_idx + 1 - num_layers; i <= layer_idx; ++ i)
-                layerms.emplace_back(m_layers[i]->regions()[region_id]);
-            // We need to perform a multi-layer intersection, so let's split it in pairs.
-            // Initialize the intersection with the candidates of the lowest layer.
-            ExPolygons intersection = to_expolygons(layerms.front()->fill_surfaces.filter_by_type(stInternal));
-            // Start looping from the second layer and intersect the current intersection with it.
-            for (size_t i = 1; i < layerms.size(); ++ i)
-                intersection = intersection_ex(layerms[i]->fill_surfaces.filter_by_type(stInternal), intersection);
-            double area_threshold = layerms.front()->infill_area_threshold();
-            if (! intersection.empty() && area_threshold > 0.)
-                intersection.erase(std::remove_if(intersection.begin(), intersection.end(),
-                    [area_threshold](const ExPolygon &expoly) { return expoly.area() <= area_threshold; }),
-                    intersection.end());
+        auto apply_combined_surface = [this](const std::vector<LayerRegion*> &layerms, const ExPolygons &intersection, SurfaceType surface_type) {
             if (intersection.empty())
-                continue;
-//            Slic3r::debugf "  combining %d %s regions from layers %d-%d\n",
-//                scalar(@$intersection),
-//                ($type == stInternal ? 'internal' : 'internal-solid'),
-//                $layer_idx-($every-1), $layer_idx;
-            // intersection now contains the regions that can be combined across the full amount of layers,
-            // so let's remove those areas from all layers.
+                return;
+
             Polygons intersection_with_clearance;
             intersection_with_clearance.reserve(intersection.size());
-            float clearance_offset =
+            const float clearance_offset =
                 0.5f * layerms.back()->flow(frPerimeter).scaled_width() +
-             // Because fill areas for rectilinear and honeycomb are grown
-             // later to overlap perimeters, we need to counteract that too.
-                ((region.config().sparse_infill_pattern == ipRectilinear   ||
-                  region.config().sparse_infill_pattern == ipMonotonic     ||
-                  region.config().sparse_infill_pattern == ipGrid          ||
-                  region.config().sparse_infill_pattern == ip2DLattice     ||
-                  region.config().sparse_infill_pattern == ipLine          ||
-                  region.config().sparse_infill_pattern == ipHoneycomb) ? 1.5f : 0.5f) *
-                    layerms.back()->flow(frSolidInfill).scaled_width();
-            for (ExPolygon &expoly : intersection)
+                1.5f * layerms.back()->flow(frSolidInfill).scaled_width();
+            for (const ExPolygon &expoly : intersection)
                 polygons_append(intersection_with_clearance, offset(expoly, clearance_offset));
+
             for (LayerRegion *layerm : layerms) {
-                Polygons internal = to_polygons(std::move(layerm->fill_surfaces.filter_by_type(stInternal)));
-                layerm->fill_surfaces.remove_type(stInternal);
-                layerm->fill_surfaces.append(diff_ex(internal, intersection_with_clearance), stInternal);
+                Polygons typed = to_polygons(std::move(layerm->fill_surfaces.filter_by_type(surface_type)));
+                layerm->fill_surfaces.remove_type(surface_type);
+                layerm->fill_surfaces.append(diff_ex(typed, intersection_with_clearance), surface_type);
+
                 if (layerm == layerms.back()) {
-                    // Apply surfaces back with adjusted depth to the uppermost layer.
-                    Surface templ(stInternal, ExPolygon());
+                    Surface templ(surface_type, ExPolygon());
                     templ.thickness = 0.;
                     for (LayerRegion *layerm2 : layerms)
                         templ.thickness += layerm2->layer()->height;
                     templ.thickness_layers = (unsigned short)layerms.size();
                     layerm->fill_surfaces.append(intersection, templ);
                 } else {
-                    // Save void surfaces.
                     layerm->fill_surfaces.append(
-                        intersection_ex(internal, intersection_with_clearance),
+                        intersection_ex(typed, intersection_with_clearance),
                         stInternalVoid);
                 }
             }
+        };
+
+        auto apply_combined_top_surface = [this](const std::vector<LayerRegion*> &layerms, const ExPolygons &intersection) {
+            if (intersection.empty())
+                return;
+
+            Polygons intersection_with_clearance;
+            intersection_with_clearance.reserve(intersection.size());
+            const float clearance_offset =
+                0.5f * layerms.back()->flow(frPerimeter).scaled_width() +
+                1.5f * layerms.back()->flow(frSolidInfill).scaled_width();
+            for (const ExPolygon &expoly : intersection)
+                polygons_append(intersection_with_clearance, offset(expoly, clearance_offset));
+
+            for (size_t idx = 0; idx < layerms.size(); ++ idx) {
+                LayerRegion *layerm = layerms[idx];
+                const SurfaceType source_type = (idx + 1 == layerms.size()) ? stTop : stInternalSolid;
+                Polygons typed = to_polygons(std::move(layerm->fill_surfaces.filter_by_type(source_type)));
+                layerm->fill_surfaces.remove_type(source_type);
+                layerm->fill_surfaces.append(diff_ex(typed, intersection_with_clearance), source_type);
+
+                if (idx + 1 == layerms.size()) {
+                    Surface templ(stTop, ExPolygon());
+                    templ.thickness = 0.;
+                    for (LayerRegion *layerm2 : layerms)
+                        templ.thickness += layerm2->layer()->height;
+                    templ.thickness_layers = (unsigned short)layerms.size();
+                    layerm->fill_surfaces.append(intersection, templ);
+                } else {
+                    layerm->fill_surfaces.append(
+                        intersection_ex(typed, intersection_with_clearance),
+                        stInternalVoid);
+                }
+            }
+        };
+
+        auto apply_combined_bottom_surface = [this](const std::vector<LayerRegion*> &layerms, const ExPolygons &intersection, SurfaceType bottom_type) {
+            if (intersection.empty())
+                return;
+
+            Polygons intersection_with_clearance;
+            intersection_with_clearance.reserve(intersection.size());
+            const float clearance_offset =
+                0.5f * layerms.back()->flow(frPerimeter).scaled_width() +
+                1.5f * layerms.back()->flow(frSolidInfill).scaled_width();
+            for (const ExPolygon &expoly : intersection)
+                polygons_append(intersection_with_clearance, offset(expoly, clearance_offset));
+
+            for (size_t idx = 0; idx < layerms.size(); ++ idx) {
+                LayerRegion *layerm = layerms[idx];
+                const SurfaceType source_type = (idx == 0) ? bottom_type : stInternalSolid;
+                Polygons typed = to_polygons(std::move(layerm->fill_surfaces.filter_by_type(source_type)));
+                layerm->fill_surfaces.remove_type(source_type);
+                layerm->fill_surfaces.append(diff_ex(typed, intersection_with_clearance), source_type);
+
+                if (idx + 1 == layerms.size()) {
+                    Surface templ(bottom_type, ExPolygon());
+                    templ.thickness = 0.;
+                    for (LayerRegion *layerm2 : layerms)
+                        templ.thickness += layerm2->layer()->height;
+                    templ.thickness_layers = (unsigned short)layerms.size();
+                    layerm->fill_surfaces.append(intersection, templ);
+                } else {
+                    layerm->fill_surfaces.append(
+                        intersection_ex(typed, intersection_with_clearance),
+                        stInternalVoid);
+                }
+            }
+        };
+
+        const std::vector<size_t> combine = build_combine_plan(target_height);
+
+        // loop through layers to which we have assigned layers to combine
+        if (target_height > EPSILON && region.config().sparse_infill_density != 0.) {
+            for (size_t layer_idx = 0; layer_idx < m_layers.size(); ++ layer_idx) {
+                m_print->throw_if_canceled();
+                size_t num_layers = combine[layer_idx];
+                if (num_layers <= 1)
+                    continue;
+                // Get all the LayerRegion objects to be combined.
+                std::vector<LayerRegion*> layerms;
+                layerms.reserve(num_layers);
+                for (size_t i = layer_idx + 1 - num_layers; i <= layer_idx; ++ i)
+                    layerms.emplace_back(m_layers[i]->regions()[region_id]);
+                // We need to perform a multi-layer intersection, so let's split it in pairs.
+                // Initialize the intersection with the candidates of the lowest layer.
+                ExPolygons intersection = to_expolygons(layerms.front()->fill_surfaces.filter_by_type(stInternal));
+                // Start looping from the second layer and intersect the current intersection with it.
+                for (size_t i = 1; i < layerms.size(); ++ i)
+                    intersection = intersection_ex(layerms[i]->fill_surfaces.filter_by_type(stInternal), intersection);
+                double area_threshold = layerms.front()->infill_area_threshold();
+                if (! intersection.empty() && area_threshold > 0.)
+                    intersection.erase(std::remove_if(intersection.begin(), intersection.end(),
+                        [area_threshold](const ExPolygon &expoly) { return expoly.area() <= area_threshold; }),
+                        intersection.end());
+                if (intersection.empty())
+                    continue;
+                Polygons intersection_with_clearance;
+                intersection_with_clearance.reserve(intersection.size());
+                float clearance_offset =
+                    0.5f * layerms.back()->flow(frPerimeter).scaled_width() +
+                    ((region.config().sparse_infill_pattern == ipRectilinear   ||
+                      region.config().sparse_infill_pattern == ipMonotonic     ||
+                      region.config().sparse_infill_pattern == ipGrid          ||
+                      region.config().sparse_infill_pattern == ip2DLattice     ||
+                      region.config().sparse_infill_pattern == ipLine          ||
+                      region.config().sparse_infill_pattern == ipHoneycomb) ? 1.5f : 0.5f) *
+                        layerms.back()->flow(frSolidInfill).scaled_width();
+                for (ExPolygon &expoly : intersection)
+                    polygons_append(intersection_with_clearance, offset(expoly, clearance_offset));
+                for (LayerRegion *layerm : layerms) {
+                    Polygons internal = to_polygons(std::move(layerm->fill_surfaces.filter_by_type(stInternal)));
+                    layerm->fill_surfaces.remove_type(stInternal);
+                    layerm->fill_surfaces.append(diff_ex(internal, intersection_with_clearance), stInternal);
+                    if (layerm == layerms.back()) {
+                        // Apply surfaces back with adjusted depth to the uppermost layer.
+                        Surface templ(stInternal, ExPolygon());
+                        templ.thickness = 0.;
+                        for (LayerRegion *layerm2 : layerms)
+                            templ.thickness += layerm2->layer()->height;
+                        templ.thickness_layers = (unsigned short)layerms.size();
+                        layerm->fill_surfaces.append(intersection, templ);
+                    } else {
+                        // Save void surfaces.
+                        layerm->fill_surfaces.append(
+                            intersection_ex(internal, intersection_with_clearance),
+                            stInternalVoid);
+                    }
+                }
+            }
+        }
+
+        const double solid_target_height = solid_surface_combination_target_height(*this, region);
+        if (solid_target_height <= EPSILON)
+            continue;
+
+        const std::vector<size_t> solid_combine = build_combine_plan(solid_target_height);
+        for (size_t layer_idx = 0; layer_idx < m_layers.size(); ++ layer_idx) {
+            m_print->throw_if_canceled();
+            size_t num_layers = solid_combine[layer_idx];
+            if (num_layers <= 1)
+                continue;
+
+            std::vector<LayerRegion*> layerms;
+            layerms.reserve(num_layers);
+            for (size_t i = layer_idx + 1 - num_layers; i <= layer_idx; ++ i)
+                layerms.emplace_back(m_layers[i]->regions()[region_id]);
+
+            ExPolygons top_intersection = to_expolygons(layerms.back()->fill_surfaces.filter_by_type(stTop));
+            for (size_t i = 0; i + 1 < layerms.size() && ! top_intersection.empty(); ++ i)
+                top_intersection = intersection_ex(layerms[i]->fill_surfaces.filter_by_type(stInternalSolid), top_intersection);
+            apply_combined_top_surface(layerms, top_intersection);
+
+            ExPolygons bottom_intersection = to_expolygons(layerms.front()->fill_surfaces.filter_by_type(stBottom));
+            for (size_t i = 1; i < layerms.size() && ! bottom_intersection.empty(); ++ i)
+                bottom_intersection = intersection_ex(layerms[i]->fill_surfaces.filter_by_type(stInternalSolid), bottom_intersection);
+            apply_combined_bottom_surface(layerms, bottom_intersection, stBottom);
+
+            ExPolygons internal_solid_intersection = to_expolygons(layerms.front()->fill_surfaces.filter_by_type(stInternalSolid));
+            for (size_t i = 1; i < layerms.size() && ! internal_solid_intersection.empty(); ++ i)
+                internal_solid_intersection = intersection_ex(layerms[i]->fill_surfaces.filter_by_type(stInternalSolid), internal_solid_intersection);
+            double area_threshold = layerms.front()->infill_area_threshold();
+            if (! internal_solid_intersection.empty() && area_threshold > 0.)
+                internal_solid_intersection.erase(std::remove_if(internal_solid_intersection.begin(), internal_solid_intersection.end(),
+                    [area_threshold](const ExPolygon &expoly) { return expoly.area() <= area_threshold; }),
+                    internal_solid_intersection.end());
+            apply_combined_surface(layerms, internal_solid_intersection, stInternalSolid);
         }
     }
 }
