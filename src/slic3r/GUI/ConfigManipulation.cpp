@@ -12,6 +12,19 @@
 namespace Slic3r {
 namespace GUI {
 
+namespace {
+
+bool allow_missing_local_feature_process_option(const std::string &opt_key)
+{
+    return opt_key == "wall_process_preset_name" ||
+           opt_key == "sparse_infill_process_preset_name" ||
+           opt_key == "solid_infill_process_preset_name" ||
+           opt_key == "support_process_preset_name" ||
+           opt_key == "support_interface_process_preset_name";
+}
+
+}
+
 void ConfigManipulation::apply(DynamicPrintConfig* config, DynamicPrintConfig* new_config)
 {
     bool modified = false;
@@ -35,7 +48,7 @@ t_config_option_keys const &ConfigManipulation::applying_keys() const
 void ConfigManipulation::toggle_field(const std::string &opt_key, const bool toggle, int opt_index /* = -1*/)
 {
     if (local_config) {
-        if (local_config->option(opt_key) == nullptr) return;
+        if (local_config->option(opt_key) == nullptr && !allow_missing_local_feature_process_option(opt_key)) return;
     }
     cb_toggle_field(opt_key, toggle, opt_index);
 }
@@ -43,7 +56,7 @@ void ConfigManipulation::toggle_field(const std::string &opt_key, const bool tog
 void ConfigManipulation::toggle_line(const std::string& opt_key, const bool toggle, int opt_index)
 {
     if (local_config) {
-        if (local_config->option(opt_key) == nullptr)
+        if (local_config->option(opt_key) == nullptr && !allow_missing_local_feature_process_option(opt_key))
             return;
     }
     if (cb_toggle_line)
@@ -456,7 +469,8 @@ void ConfigManipulation::update_print_fff_config(DynamicPrintConfig* config, con
             }
 
             timelapse_type = TimelapseType::tlTraditional;
-            if (new_conf.has("sparse_infill_density") && new_conf.option<ConfigOptionPercent>("sparse_infill_density") == 0) sparse_infill_density = 0;
+            if (new_conf.has("sparse_infill_density") && new_conf.option<ConfigOptionPercent>("sparse_infill_density") == 0)
+                sparse_infill_density = 0;
             if (new_conf.has("enable_support") && !new_conf.opt_bool("enable_support")) support = false;
         }
         else {
@@ -730,7 +744,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
 
     bool have_infill = config->option<ConfigOptionPercent>("sparse_infill_density")->value > 0;
     // sparse_infill_filament uses the same logic as in Print::extruders()
-    for (auto el : {"sparse_infill_pattern", "sparse_infill_anchor_max", "infill_combination", "minimum_sparse_infill_area", "sparse_infill_filament", "infill_shift_step",
+    for (auto el : {"sparse_infill_pattern", "sparse_infill_anchor_max", "infill_combination", "minimum_sparse_infill_area", "sparse_infill_filament", "sparse_infill_process_preset_name", "infill_shift_step",
                     "infill_rotate_step", "symmetric_infill_y_axis", "sparse_infill_lattice_angle_1", "sparse_infill_lattice_angle_2"})
         toggle_line(el, have_infill);
 
@@ -770,7 +784,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     bool has_bottom_solid_infill = config->opt_int("bottom_shell_layers") > 0;
     bool has_solid_infill 		 = has_top_solid_infill || has_bottom_solid_infill;
     // solid_infill_filament uses the same logic as in Print::extruders()
-    for (auto el : {"top_surface_pattern", "bottom_surface_pattern", "top_surface_density", "bottom_surface_density", "internal_solid_infill_pattern", "solid_infill_filament"})
+    for (auto el : {"top_surface_pattern", "bottom_surface_pattern", "top_surface_density", "bottom_surface_density", "internal_solid_infill_pattern", "solid_infill_filament", "solid_infill_process_preset_name"})
         toggle_field(el, has_solid_infill);
 
     for (auto el : { "infill_direction", "sparse_infill_line_width", "bridge_angle",
@@ -813,6 +827,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_field("brim_width", have_brim_width);
     // wall_filament uses the same logic as in Print::extruders()
     toggle_field("wall_filament", have_perimeters || have_brim);
+    toggle_field("wall_process_preset_name", have_perimeters || have_brim);
 
     bool have_raft = config->opt_int("raft_layers") > 0;
     bool have_support_material = config->opt_bool("enable_support") || have_raft;
@@ -851,7 +866,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("support_bottom_interface_spacing", !support_is_tree);
     toggle_line("support_interface_bottom_layers", !support_is_tree);
 
-    for (auto el : {"support_interface_spacing", "support_interface_filament", "support_interface_loop_pattern"})
+    for (auto el : {"support_interface_spacing", "support_interface_filament", "support_interface_process_preset_name", "support_interface_loop_pattern"})
         toggle_field(el, have_support_material && have_support_interface);
 
     //BBS
@@ -865,6 +880,7 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
 
     toggle_field("inner_wall_line_width", have_perimeters || have_skirt || have_brim);
     toggle_field("support_filament", have_support_material || have_skirt);
+    toggle_field("support_process_preset_name", have_support_material || have_skirt);
 
     toggle_line("raft_contact_distance", have_raft && !have_support_soluble);
 
@@ -913,8 +929,13 @@ void ConfigManipulation::toggle_print_fff_options(DynamicPrintConfig *config, in
     toggle_line("flush_into_objects", !is_global_config);
     toggle_line("print_flow_ratio", !is_global_config);
     toggle_line("wall_filament", !is_global_config);
+    toggle_line("wall_process_preset_name", !is_global_config);
     toggle_line("solid_infill_filament", !is_global_config);
+    toggle_line("solid_infill_process_preset_name", !is_global_config);
     toggle_line("sparse_infill_filament", !is_global_config);
+    toggle_line("sparse_infill_process_preset_name", !is_global_config);
+    toggle_line("support_process_preset_name", !is_global_config);
+    toggle_line("support_interface_process_preset_name", !is_global_config);
 
     toggle_line("support_interface_not_for_body",config->opt_int("support_interface_filament")&&!config->opt_int("support_filament"));
 

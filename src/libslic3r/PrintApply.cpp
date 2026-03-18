@@ -183,6 +183,42 @@ static bool layer_height_ranges_equal(const t_layer_config_ranges &lr1, const t_
     return true;
 }
 
+static bool model_part_layer_height_overrides_differ(const ModelObject &lhs, const ModelObject &rhs)
+{
+    std::vector<const ModelVolume*> lhs_volumes;
+    std::vector<const ModelVolume*> rhs_volumes;
+    lhs_volumes.reserve(lhs.volumes.size());
+    rhs_volumes.reserve(rhs.volumes.size());
+
+    for (const ModelVolume *volume : lhs.volumes)
+        if (volume->is_model_part())
+            lhs_volumes.push_back(volume);
+    for (const ModelVolume *volume : rhs.volumes)
+        if (volume->is_model_part())
+            rhs_volumes.push_back(volume);
+
+    auto by_id = [](const ModelVolume *left, const ModelVolume *right) { return left->id() < right->id(); };
+    std::sort(lhs_volumes.begin(), lhs_volumes.end(), by_id);
+    std::sort(rhs_volumes.begin(), rhs_volumes.end(), by_id);
+
+    if (lhs_volumes.size() != rhs_volumes.size())
+        return true;
+
+    for (size_t i = 0; i < lhs_volumes.size(); ++i) {
+        if (lhs_volumes[i]->id() != rhs_volumes[i]->id())
+            return true;
+        const bool lhs_has_layer_height = lhs_volumes[i]->config.has("layer_height");
+        const bool rhs_has_layer_height = rhs_volumes[i]->config.has("layer_height");
+        if (lhs_has_layer_height != rhs_has_layer_height)
+            return true;
+        if (lhs_has_layer_height &&
+            std::abs(lhs_volumes[i]->config.option("layer_height")->getFloat() - rhs_volumes[i]->config.option("layer_height")->getFloat()) > EPSILON)
+            return true;
+    }
+
+    return false;
+}
+
 // Returns true if va == vb when all CustomGCode items that are not ToolChangeCode are ignored.
 static bool custom_per_printz_gcodes_tool_changes_differ(const std::vector<CustomGCode::Item> &va, const std::vector<CustomGCode::Item> &vb)
 {
@@ -1533,6 +1569,7 @@ Print::ApplyStatus Print::apply(const Model &model, DynamicPrintConfig new_full_
         // Check whether a model part volume was added or removed, their transformations or order changed.
         // Only volume IDs, volume types, transformation matrices and their order are checked, configuration and other parameters are NOT checked.
         bool solid_or_modifier_differ   = model_volume_list_changed(model_object, model_object_new, solid_or_modifier_types) ||
+                                          model_part_layer_height_overrides_differ(model_object, model_object_new) ||
                                           model_mmu_segmentation_data_changed(model_object, model_object_new) || (model_object_new.is_mm_painted() && num_extruders_changed) ||
                                           model_custom_fuzzy_skin_data_changed(model_object, model_object_new);
         bool supports_differ            = model_volume_list_changed(model_object, model_object_new, ModelVolumeType::SUPPORT_BLOCKER) ||

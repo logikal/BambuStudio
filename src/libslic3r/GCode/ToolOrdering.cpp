@@ -362,16 +362,19 @@ void ToolOrdering::sort_and_build_data(const Print& print, unsigned int first_ex
     m_sorted = true;
 
     double max_layer_height = 0.;
-    double object_bottom_z = 0.;
+    double object_bottom_z = std::numeric_limits<double>::max();
     for (const auto& object : print.objects()) {
         for (const Layer* layer : object->layers()) {
             if (layer->has_extrusions()) {
-                object_bottom_z = layer->print_z - layer->height;
+                object_bottom_z = std::min(object_bottom_z, double(layer->print_z - layer->height));
                 break;
             }
         }
         max_layer_height = std::max(max_layer_height, object->config().layer_height.value);
     }
+
+    if (!std::isfinite(object_bottom_z))
+        object_bottom_z = 0.;
 
     max_layer_height = calc_max_layer_height(print.config(), max_layer_height);
 

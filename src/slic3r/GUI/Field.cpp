@@ -1572,6 +1572,12 @@ boost::any& Choice::get_value()
         } else
 			m_value = field->GetSelection();
 	}
+    else if (m_list && m_opt.gui_type == ConfigOptionDef::GUIType::select_open) {
+        const int ret_enum = field->GetSelection();
+        if (ret_enum >= 0)
+            ret_str = m_list->get_value(ret_enum);
+        get_value_by_opt_type(ret_str);
+    }
     else if (m_opt.gui_type == ConfigOptionDef::GUIType::f_enum_open || m_opt.gui_type == ConfigOptionDef::GUIType::i_enum_open) {
         const int ret_enum = field->GetSelection();
         if (m_list) {

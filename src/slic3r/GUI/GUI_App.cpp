@@ -18,6 +18,8 @@
 #include "slic3r/GUI/I18N.hpp"
 
 #include <algorithm>
+#include <cerrno>
+#include <cstring>
 #include <iterator>
 #include <exception>
 #include <cstdlib>
@@ -2495,17 +2497,34 @@ void GUI_App::init_app_config()
 #if BBL_INTERNAL_TESTING
             data_dir += BBL_INTERNAL_TESTING == 1 ? "Internal" : "Beta";
 #endif
-            //BBS create folder if not exists
-            boost::filesystem::path data_dir_path(data_dir);
-            if (!boost::filesystem::exists(data_dir_path))
-                boost::filesystem::create_directory(data_dir_path);
+            // Ensure both the data and log folders exist before we start logging or chdir into them.
+            boost::filesystem::path        data_dir_path(data_dir);
+            const boost::filesystem::path  log_dir_path = data_dir_path / "log";
+            const std::string              log_dir = log_dir_path.string();
+            boost::system::error_code      ec;
+            boost::filesystem::create_directories(data_dir_path, ec);
+            if (ec) {
+                throw Slic3r::RuntimeError(
+                    _u8L("Bambu Studio could not create its data directory.") + "\n\n" +
+                    data_dir_path.string() + "\n\n" + ec.message());
+            }
+            ec.clear();
+            boost::filesystem::create_directories(log_dir_path, ec);
+            if (ec) {
+                throw Slic3r::RuntimeError(
+                    _u8L("Bambu Studio could not create its log directory.") + "\n\n" +
+                    log_dir + "\n\n" + ec.message());
+            }
             set_data_dir(data_dir);
 #if defined(__WINDOWS__)
             // Change current dirtory of application
-            _chdir(encode_path((data_dir + "/log").c_str()).c_str());
+            if (_chdir(encode_path(log_dir.c_str()).c_str()) != 0)
 #else
-            chdir(encode_path((data_dir + "/log").c_str()).c_str());
+            if (chdir(encode_path(log_dir.c_str()).c_str()) != 0)
 #endif
+                throw Slic3r::RuntimeError(
+                    _u8L("Bambu Studio could not switch to its log directory.") + "\n\n" +
+                    log_dir + "\n\n" + std::strerror(errno));
     } else {
         m_datadir_redefined = true;
     }

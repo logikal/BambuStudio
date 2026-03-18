@@ -165,8 +165,13 @@ namespace instance_check_internal
 
         if (! boost::filesystem::is_directory(path)) {
             BOOST_LOG_TRIVIAL(debug) << "get_lock(): datadir does not exist yet, creating...";
-            if (! boost::filesystem::create_directories(path))
+            boost::system::error_code ec;
+            if (! boost::filesystem::create_directories(path, ec) && ec)
                 BOOST_LOG_TRIVIAL(debug) << "get_lock(): unable to create datadir !!!";
+            if (ec) {
+                BOOST_LOG_TRIVIAL(error) << "get_lock(): create_directories failed for " << path << ", reason: " << ec.message();
+                return true;
+            }
         }
 
 		if ((fdlock = open(dest_dir.c_str(), O_WRONLY | O_CREAT, 0666)) == -1) {

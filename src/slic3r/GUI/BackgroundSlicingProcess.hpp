@@ -293,6 +293,7 @@ private:
 	GUI::PartPlate* m_current_plate;
 	PrinterTechnology m_printer_tech = ptUnknown;
 	bool m_internal_cancelled = false;
+    StringObjectException m_feature_process_validation_error;
 
     PrintState<BackgroundSlicingProcessStep, bspsCount>   	m_step_state;
 	bool                set_step_started(BackgroundSlicingProcessStep step);

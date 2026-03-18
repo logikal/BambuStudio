@@ -1124,9 +1124,28 @@ boost::any ConfigOptionsGroup::get_config_value(const DynamicPrintConfig& config
         break;
     }
     case coString:
-        ret = from_u8(config.opt_string(opt_key2));
+        if (const auto *value = config.option<ConfigOptionString>(opt_key2); value != nullptr)
+            ret = from_u8(value->value);
+        else if (const auto *default_value = opt->get_default_value<ConfigOptionString>(); default_value != nullptr)
+            ret = from_u8(default_value->value);
+        else
+            ret = text_value;
         break;
     case coStrings:
+        if (const auto *value = config.option<ConfigOptionStrings>(opt_key2); value == nullptr) {
+            const auto *default_value = opt->get_default_value<ConfigOptionStrings>();
+            if (default_value == nullptr || default_value->values.empty())
+                ret = text_value;
+            else if (opt->gui_flags == "serialized") {
+                for (auto el : default_value->values)
+                    text_value += el + ";";
+                ret = text_value;
+            } else {
+                const unsigned int safe_idx = std::min<unsigned int>(static_cast<unsigned int>(idx), unsigned(default_value->values.size() - 1));
+                ret = from_u8(default_value->get_at(safe_idx));
+            }
+            break;
+        }
         if (opt_key2 == "compatible_printers" || opt_key2 == "compatible_prints") {
             ret = config.option<ConfigOptionStrings>(opt_key2)->values;
             break;

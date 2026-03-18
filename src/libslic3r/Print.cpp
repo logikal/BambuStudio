@@ -80,6 +80,36 @@ bool Print::has_tpu_filament() const
     return false;
 }
 
+static double estimate_min_layer_height_for_wipe_tower(const Print &print)
+{
+    double min_layer_height = std::numeric_limits<double>::max();
+
+    for (const PrintObject *object : print.objects()) {
+        if (object == nullptr)
+            continue;
+
+        if (!object->layers().empty()) {
+            for (const Layer *layer : object->layers()) {
+                if (layer != nullptr && layer->height > EPSILON)
+                    min_layer_height = std::min(min_layer_height, double(layer->height));
+            }
+        } else {
+            const SlicingParameters &slicing_params = object->slicing_parameters();
+            if (slicing_params.valid) {
+                if (slicing_params.first_print_layer_height > EPSILON)
+                    min_layer_height = std::min(min_layer_height, double(slicing_params.first_print_layer_height));
+                if (slicing_params.layer_height > EPSILON)
+                    min_layer_height = std::min(min_layer_height, double(slicing_params.layer_height));
+            }
+        }
+    }
+
+    if (!std::isfinite(min_layer_height))
+        min_layer_height = 0.08;
+
+    return min_layer_height;
+}
+
 // Called by Print::apply().
 // This method only accepts PrintConfig option keys.
 bool Print::invalidate_state_by_config_options(const ConfigOptionResolver & /* new_config */, const std::vector<t_config_option_key> &opt_keys)
@@ -1294,17 +1324,15 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
     }
 
     if (this->has_wipe_tower() && ! m_objects.empty()) {
-        // Make sure all extruders use same diameter filament and have the same nozzle diameter
-        // EPSILON comparison is used for nozzles and 10 % tolerance is used for filaments
-        double first_nozzle_diam = m_config.nozzle_diameter.get_at(extruders.front());
+        // Make sure all extruders use compatible filament diameter. Wipe tower code already tracks
+        // nozzle diameter per tool, so heterogeneous nozzles should be rejected by later layering
+        // constraints only when the current print combination is actually unsupported.
         double first_filament_diam = m_config.filament_diameter.get_at(extruders.front());
         for (const auto& extruder_idx : extruders) {
-            double nozzle_diam = m_config.nozzle_diameter.get_at(extruder_idx);
             double filament_diam = m_config.filament_diameter.get_at(extruder_idx);
-            if (nozzle_diam - EPSILON > first_nozzle_diam || nozzle_diam + EPSILON < first_nozzle_diam
-                || std::abs((filament_diam - first_filament_diam) / first_filament_diam) > 0.1)
+            if (std::abs((filament_diam - first_filament_diam) / first_filament_diam) > 0.1)
                 // BBS: remove L()
-                return { L("Different nozzle diameters and different filament diameters is not allowed when prime tower is enabled.") };
+                return { L("Different filament diameters are not allowed when prime tower is enabled.") };
         }
 
         if (! m_config.use_relative_e_distances)
@@ -1349,20 +1377,21 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
             for (size_t i = 1; i < m_objects.size(); ++ i) {
                 const PrintObject       *object         = m_objects[i];
                 const SlicingParameters &slicing_params = object->slicing_parameters();
-                if (std::abs(slicing_params.first_print_layer_height - slicing_params0.first_print_layer_height) > EPSILON ||
-                    std::abs(slicing_params.layer_height             - slicing_params0.layer_height            ) > EPSILON)
-                    return {L("The prime tower requires that all objects have the same layer heights"), object, "initial_layer_print_height"};
                 if (slicing_params.raft_layers() != slicing_params0.raft_layers())
                     return {L("The prime tower requires that all objects are printed over the same number of raft layers"), object, "raft_layers"};
-                // BBS: support gap can be multiple of object layer height, remove _L()
-#if 0
-                if (slicing_params0.gap_object_support != slicing_params.gap_object_support ||
-                    slicing_params0.gap_support_object != slicing_params.gap_support_object)
-                    return  {("The prime tower is only supported for multiple objects if they are printed with the same support_top_z_distance"), object};
-#endif
-                if (!equal_layering(slicing_params, slicing_params0))
-                    return  { L("The prime tower requires that all objects are sliced with the same layer heights."), object };
                 if (has_custom_layering) {
+                    if (std::abs(slicing_params.first_print_layer_height - slicing_params0.first_print_layer_height) > EPSILON ||
+                        std::abs(slicing_params.layer_height             - slicing_params0.layer_height            ) > EPSILON)
+                        return {L("The prime tower currently supports mixed object layer heights only for fixed layer height objects."), object, "initial_layer_print_height"};
+                    // BBS: support gap can be multiple of object layer height, remove _L()
+#if 0
+                    if (slicing_params0.gap_object_support != slicing_params.gap_support_object ||
+                        slicing_params0.gap_support_object != slicing_params.gap_support_object)
+                        return  {("The prime tower is only supported for multiple objects if they are printed with the same support_top_z_distance"), object};
+#endif
+                    if (!equal_layering(slicing_params, slicing_params0))
+                        return  { L("The prime tower currently supports mixed object layer heights only for fixed layer height objects."), object };
+
                     auto &lh         = layer_height_profile(i);
                     auto &lh_tallest = layer_height_profile(tallest_object_idx);
                     if (*(lh.end()-2) > *(lh_tallest.end()-2))
@@ -1393,7 +1422,7 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
                         //if (i % 2 == 0 && layer_height_profiles[tallest_object_idx][i] > layer_height_profiles[idx_object][layer_height_profiles[idx_object].size() - 2])
                         //    break;
                         if (std::abs(layer_z_series[idx_object][i] - layer_z_series[tallest_object_idx][i]) > eps)
-                            return {L("The prime tower is only supported if all objects have the same variable layer height")};
+                            return {L("The prime tower is only supported if all variable layer height objects have the same layer schedule.")};
                         ++i;
                     }
                 }
@@ -1477,6 +1506,35 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
                 }
             }
 
+            std::vector<EffectiveLayerHeightRange> effective_layer_ranges;
+            const bool has_part_layer_height = model_object_has_part_layer_height_overrides(*object->model_object());
+            if (has_part_layer_height) {
+                std::string layer_height_error;
+                if (!build_effective_layer_height_ranges(*object->model_object(), object->slicing_parameters(), effective_layer_ranges, &layer_height_error))
+                    return { layer_height_error, object, "layer_height" };
+            }
+
+            auto min_nozzle_for_extruders = [this, min_nozzle_diameter](const std::vector<unsigned int> &active_extruders) {
+                if (active_extruders.empty())
+                    return min_nozzle_diameter;
+                double out = std::numeric_limits<double>::max();
+                for (unsigned int extruder_id : active_extruders)
+                    out = std::min(out, double(m_config.nozzle_diameter.get_at(extruder_id)));
+                return std::isfinite(out) ? out : min_nozzle_diameter;
+            };
+
+            auto min_layer_height_for_extruders = [this](const std::vector<unsigned int> &active_extruders) {
+                constexpr double min_layer_height_floor   = 0.01;
+                constexpr double min_layer_height_default = 0.07;
+                double out = std::numeric_limits<double>::lowest();
+                for (unsigned int extruder_id : active_extruders) {
+                    double min_layer_height = m_config.min_layer_height.get_at(extruder_id);
+                    min_layer_height = (min_layer_height == 0.) ? min_layer_height_default : std::max(min_layer_height_floor, min_layer_height);
+                    out = std::max(out, min_layer_height);
+                }
+                return std::isfinite(out) ? out : min_layer_height_floor;
+            };
+
             double initial_layer_print_height = m_config.initial_layer_print_height.value;
             double first_layer_min_nozzle_diameter;
             if (object->has_raft()) {
@@ -1489,15 +1547,30 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
                     m_config.nozzle_diameter.get_at(first_layer_extruder);
             } else {
                 // if we don't have raft layers, any nozzle diameter is potentially used in first layer
-                first_layer_min_nozzle_diameter = min_nozzle_diameter;
+                first_layer_min_nozzle_diameter = (!effective_layer_ranges.empty()) ?
+                    min_nozzle_for_extruders(effective_layer_ranges.front().active_extruders) :
+                    min_nozzle_diameter;
             }
             if (initial_layer_print_height > first_layer_min_nozzle_diameter)
                 return  {L("Layer height cannot exceed nozzle diameter"), object, "initial_layer_print_height"};
 
             // validate layer_height
             double layer_height = object->config().layer_height.value;
-            if (layer_height > min_nozzle_diameter)
+            double min_effective_layer_height = layer_height;
+            if (!effective_layer_ranges.empty()) {
+                double max_effective_layer_height = layer_height;
+                for (const EffectiveLayerHeightRange &range : effective_layer_ranges) {
+                    if (range.layer_height + EPSILON < min_layer_height_for_extruders(range.active_extruders))
+                        return { L("Layer height is lower than the minimum supported by the selected nozzle"), object, "layer_height" };
+                    if (range.layer_height > min_nozzle_for_extruders(range.active_extruders))
+                        return { L("Layer height cannot exceed nozzle diameter"), object, "layer_height" };
+                    max_effective_layer_height = std::max(max_effective_layer_height, double(range.layer_height));
+                    min_effective_layer_height = std::min(min_effective_layer_height, double(range.layer_height));
+                }
+                layer_height = max_effective_layer_height;
+            } else if (layer_height > min_nozzle_diameter) {
                 return  {L("Layer height cannot exceed nozzle diameter"), object, "layer_height"};
+            }
 
             // Validate extrusion widths.
             std::string err_msg;
@@ -1507,10 +1580,12 @@ StringObjectException Print::validate(StringObjectException *warning, Polygons* 
                 if (!validate_extrusion_width(object->config(), "support_line_width", layer_height, err_msg))
                     return {err_msg, object, "support_line_width"};
             }
-            for (const char *opt_key : { "inner_wall_line_width", "outer_wall_line_width", "sparse_infill_line_width", "internal_solid_infill_line_width", "top_surface_line_width","skin_infill_line_width" ,"skeleton_infill_line_width"})
-				for (const PrintRegion &region : object->all_regions())
-                    if (!validate_extrusion_width(region.config(), opt_key, layer_height, err_msg))
-		            	return  {err_msg, object, opt_key};
+            const char *part_line_width_keys[] = { "inner_wall_line_width", "outer_wall_line_width", "sparse_infill_line_width", "internal_solid_infill_line_width", "top_surface_line_width", "skin_infill_line_width", "skeleton_infill_line_width" };
+            const double line_width_validation_height = effective_layer_ranges.empty() ? layer_height : min_effective_layer_height;
+            for (const char *opt_key : part_line_width_keys)
+                for (const PrintRegion &region : object->all_regions())
+                    if (!validate_extrusion_width(region.config(), opt_key, line_width_validation_height, err_msg))
+                        return {err_msg, object, opt_key};
         }
     }
 
@@ -2932,8 +3007,7 @@ const WipeTowerData& Print::wipe_tower_data(size_t filaments_cnt) const
     }
     if (max_height < EPSILON) return m_wipe_tower_data;
 
-    double layer_height                  = 0.08f; // hard code layer height
-    layer_height        = m_objects.front()->config().layer_height.value;
+    double layer_height = estimate_min_layer_height_for_wipe_tower(*this);
 
     auto   timelapse_type  = config().option<ConfigOptionEnum<TimelapseType>>("timelapse_type");
     bool   need_wipe_tower = (timelapse_type ? (timelapse_type->value == TimelapseType::tlSmooth) : false) | m_config.prime_tower_rib_wall.value;
@@ -3161,7 +3235,9 @@ void Print::_make_wipe_tower()
     m_wipe_tower_data.rib_offset = wipe_tower.get_rib_offset();
 
     // Unload the current filament over the purge tower. 
-    coordf_t layer_height = m_objects.front()->config().layer_height.value;
+    coordf_t layer_height = coordf_t(estimate_min_layer_height_for_wipe_tower(*this));
+    if (m_wipe_tower_data.tool_ordering.back().wipe_tower_layer_height > EPSILON)
+        layer_height = m_wipe_tower_data.tool_ordering.back().wipe_tower_layer_height;
     if (m_wipe_tower_data.tool_ordering.back().wipe_tower_partitions > 0) {
         // The wipe tower goes up to the last layer of the print.
         if (wipe_tower.layer_finished()) {

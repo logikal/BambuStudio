@@ -5,6 +5,7 @@
 #include <wx/colourdata.h>
 #include <wx/gdicmn.h>
 #include <wx/clrpicker.h>
+#include <unordered_map>
 
 #include "libslic3r/Preset.hpp"
 #include "wxExtensions.hpp"
@@ -186,6 +187,13 @@ private:
 class PlaterPresetComboBox : public PresetComboBox
 {
 public:
+    struct FilamentDisplayRow
+    {
+        std::string preset_name;
+        std::string tooltip;
+        bool        manual_override{ false };
+    };
+
     PlaterPresetComboBox(wxWindow *parent, Preset::Type preset_type);
     ~PlaterPresetComboBox();
 
@@ -207,6 +215,8 @@ public:
     void msw_rescale() override;
     void OnSelect(wxCommandEvent& evt) override;
     void update_badge_according_flag();
+    std::string get_filament_preset_name_for_selection(int selection) const;
+    bool is_filament_selection_manual_override(int selection) const;
 
     FilamentColor get_cur_color_info();
     void show_default_color_picker();
@@ -216,6 +226,7 @@ public:
 private:
     // BBS
     wxColor m_color;
+    std::unordered_map<int, FilamentDisplayRow> m_filament_rows;
 };
 
 

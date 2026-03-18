@@ -974,13 +974,13 @@ bool PlaterPresetComboBox::switch_to_tab()
         wxGetApp().params_dialog()->Popup();
     tab->restore_last_select_item();
 
-    const Preset* selected_filament_preset = nullptr;
     if (m_type == Preset::TYPE_FILAMENT)
     {
-        const std::string& selected_preset = GetString(GetSelection()).ToUTF8().data();
-        if (!boost::algorithm::starts_with(selected_preset, Preset::suffix_modified()))
-        {
-            const std::string& preset_name = wxGetApp().preset_bundle->filaments.get_preset_name_by_alias(selected_preset);
+        std::string preset_name = get_filament_preset_name_for_selection(GetSelection());
+        if (preset_name.empty() && size_t(m_filament_idx) < wxGetApp().preset_bundle->filament_presets.size())
+            preset_name = wxGetApp().preset_bundle->filament_presets[m_filament_idx];
+
+        if (!preset_name.empty()) {
             if (wxGetApp().get_tab(m_type)->select_preset(preset_name))
                 wxGetApp().get_tab(m_type)->get_combo_box()->set_filament_idx(m_filament_idx);
             else {
@@ -1085,6 +1085,18 @@ wxString PlaterPresetComboBox::get_preset_name(const Preset& preset)
     return from_u8(preset.label(false));
 }
 
+std::string PlaterPresetComboBox::get_filament_preset_name_for_selection(int selection) const
+{
+    auto it = m_filament_rows.find(selection);
+    return it == m_filament_rows.end() ? std::string() : it->second.preset_name;
+}
+
+bool PlaterPresetComboBox::is_filament_selection_manual_override(int selection) const
+{
+    auto it = m_filament_rows.find(selection);
+    return it != m_filament_rows.end() && it->second.manual_override;
+}
+
 // Only the compatible presets are shown.
 // If an incompatible preset is selected, it is shown as well.
 void PlaterPresetComboBox::update()
@@ -1118,6 +1130,227 @@ void PlaterPresetComboBox::update()
             return;
         }
         //assert(selected_filament_preset);
+    }
+
+    m_filament_rows.clear();
+
+    if (m_type == Preset::TYPE_FILAMENT) {
+        const std::deque<Preset> &presets = m_collection->get_presets();
+        PartPlate *current_plate = wxGetApp().plater()->get_partplate_list().get_curr_plate();
+        std::vector<int> filament_maps = current_plate ? current_plate->get_real_filament_maps(m_preset_bundle->project_config)
+                                                       : m_preset_bundle->project_config.option<ConfigOptionInts>("filament_map")->values;
+        if (m_preset_bundle->normalize_filament_presets_for_slot_nozzles(filament_maps))
+            selected_filament_preset = m_collection->find_preset(m_preset_bundle->filament_presets[m_filament_idx], false);
+        const std::string selected_exact_name = selected_filament_preset ? selected_filament_preset->name : std::string();
+        const std::string selected_alias = selected_exact_name.empty() ? std::string() : m_preset_bundle->get_filament_alias_for_preset(selected_exact_name);
+        const std::string slot_nozzle_label = m_preset_bundle->get_filament_slot_nozzle_label(m_filament_idx, filament_maps);
+        const std::string slot_exact_name = selected_alias.empty() ? std::string() :
+            m_preset_bundle->get_filament_preset_name_by_alias_for_slot(selected_alias, m_filament_idx, filament_maps, nullptr, true);
+        const bool selected_is_manual = m_preset_bundle->is_filament_variant_manual_override(m_filament_idx) &&
+                                        !selected_alias.empty() && !slot_exact_name.empty() && selected_exact_name != slot_exact_name;
+        const std::string selected_exact_nozzle = selected_exact_name.empty() ? std::string() : m_preset_bundle->get_filament_preset_nozzle_label(selected_exact_name);
+
+        struct FilamentRowView {
+            const Preset *display_preset{ nullptr };
+            std::string   alias;
+            std::string   display_label;
+            std::string   exact_preset_name;
+            std::string   tooltip;
+            bool          is_selected{ false };
+        };
+
+        std::vector<FilamentRowView> project_rows;
+        std::vector<FilamentRowView> user_rows;
+        std::vector<FilamentRowView> system_rows;
+        std::vector<FilamentRowView> unsupported_rows;
+        std::unordered_set<std::string> seen_aliases;
+
+        auto make_row = [&](const Preset &family_preset, const std::string &family_alias, const std::string &resolved_name, bool is_selected_family) {
+            const Preset *resolved_preset = m_collection->find_preset(resolved_name, false);
+            if (resolved_preset == nullptr)
+                resolved_preset = &family_preset;
+
+            FilamentRowView row;
+            row.alias            = family_alias;
+            row.is_selected      = is_selected_family;
+            row.display_preset   = is_selected_family ? selected_filament_preset : resolved_preset;
+            row.exact_preset_name = resolved_name;
+
+            std::string badge_label = is_selected_family && !selected_exact_nozzle.empty()
+                ? selected_exact_nozzle
+                : m_preset_bundle->get_filament_preset_nozzle_label(resolved_name);
+            if (badge_label.empty())
+                badge_label = slot_nozzle_label;
+
+            row.display_label = family_alias + " · " + badge_label;
+
+            if (is_selected_family) {
+                if (selected_is_manual) {
+                    row.tooltip = "Manual override: " + selected_exact_name + " on " + slot_nozzle_label + " nozzle";
+                } else {
+                    row.tooltip = "Auto-matched: " + selected_exact_name;
+                }
+            } else {
+                row.tooltip = resolved_name;
+            }
+            return row;
+        };
+
+        for (size_t i = presets.front().is_visible ? 0 : m_collection->num_default_presets(); i < presets.size(); ++i) {
+            const Preset &preset = presets[i];
+            const bool is_selected = selected_filament_preset != nullptr && selected_exact_name == preset.name;
+            if (!is_selected && !preset.is_visible)
+                continue;
+
+            const std::string family_alias = m_preset_bundle->get_filament_alias_for_preset(preset.name);
+            if (family_alias.empty() || !seen_aliases.insert(family_alias).second)
+                continue;
+
+            std::string resolved_name = m_preset_bundle->get_filament_preset_name_by_alias_for_slot(family_alias, m_filament_idx, filament_maps, nullptr, true);
+            if (resolved_name.empty())
+                resolved_name = m_preset_bundle->get_filament_preset_name_by_alias_for_slot(family_alias, m_filament_idx, filament_maps, nullptr, false);
+            if (resolved_name.empty())
+                continue;
+
+            const Preset *resolved_preset = m_collection->find_preset(resolved_name, false);
+            const bool is_selected_family = family_alias == selected_alias;
+            FilamentRowView row = make_row(resolved_preset ? *resolved_preset : preset, family_alias, resolved_name, is_selected_family);
+
+            const Preset *category_preset = row.display_preset ? row.display_preset : resolved_preset;
+            if (category_preset == nullptr)
+                continue;
+
+            if (!category_preset->is_compatible)
+                unsupported_rows.push_back(std::move(row));
+            else if (category_preset->is_project_embedded)
+                project_rows.push_back(std::move(row));
+            else if (category_preset->is_default || category_preset->is_system)
+                system_rows.push_back(std::move(row));
+            else
+                user_rows.push_back(std::move(row));
+        }
+
+        std::vector<std::string> filament_orders = {"Bambu PLA Basic", "Bambu PLA Matte", "Bambu PLA Lite", "Bambu PLA Tough+", "Bambu PETG Basic", "Bambu PETG HF", "Bambu ABS",
+                                                    "Bambu ASA", "Bambu PLA Silk+", "Bambu PLA Silk", "Bambu PLA-CF", "Bambu PLA Marble", "Bambu PLA Metal", "Bambu PLA Sparkle",
+                                                    "Bambu PLA Galaxy", "Bambu PLA Glow", "Bambu PLA Wood", "Bambu PLA Translucent", "Bambu PETG Translucent", "Bambu PC",
+                                                    "Bambu PC FR", "Bambu PETG-CF", "Bambu ABS-GF", "Bambu ASA-CF", "Bambu PA6-CF", "Bambu PA6-GF", "Bambu PAHT-CF", "Bambu PET-CF",
+                                                    "Bambu PPA-CF", "Bambu PPS-CF", "Bambu PLA Aero", "Bambu ASA-Aero", "Bambu TPU for AMS", "Bambu TPU 95A HF", "Bambu TPU 90A",
+                                                    "Bambu TPU 85A", "Bambu Support For PLA", "Bambu Support For PLA/PETG", "Bambu Support for ABS", "Bambu PVA", "Bambu Support For PA/PET",
+                                                    "Bambu TPU 95A", "Bambu PA-CF", "Bambu PLA Tough", "Bambu PLA Dynamic", "Bambu Support W", "Bambu Support G"};
+        std::vector<std::string> first_vendors = {"", "Bambu", "Generic"};
+        std::vector<std::string> first_types = {"PLA", "PETG", "ABS", "TPU"};
+
+        auto sort_rows = [&](std::vector<FilamentRowView> &rows) {
+            std::sort(rows.begin(), rows.end(), [&](const FilamentRowView &lhs, const FilamentRowView &rhs) {
+                auto alias_order_l = std::find(filament_orders.begin(), filament_orders.end(), lhs.alias);
+                auto alias_order_r = std::find(filament_orders.begin(), filament_orders.end(), rhs.alias);
+                if (alias_order_l != alias_order_r)
+                    return alias_order_l < alias_order_r;
+
+                std::string vendor_l, vendor_r, type_l, type_r;
+                if (lhs.display_preset && lhs.display_preset->config.has("filament_vendor"))
+                    vendor_l = lhs.display_preset->config.option<ConfigOptionStrings>("filament_vendor")->values.at(0);
+                if (rhs.display_preset && rhs.display_preset->config.has("filament_vendor"))
+                    vendor_r = rhs.display_preset->config.option<ConfigOptionStrings>("filament_vendor")->values.at(0);
+                if (vendor_l == "Bambu Lab") vendor_l = "Bambu";
+                if (vendor_r == "Bambu Lab") vendor_r = "Bambu";
+
+                auto vendor_order_l = std::find(first_vendors.begin(), first_vendors.end(), vendor_l);
+                auto vendor_order_r = std::find(first_vendors.begin(), first_vendors.end(), vendor_r);
+                if (vendor_order_l != vendor_order_r)
+                    return vendor_order_l < vendor_order_r;
+
+                if (lhs.display_preset && lhs.display_preset->config.has("filament_type"))
+                    type_l = lhs.display_preset->config.option<ConfigOptionStrings>("filament_type")->values.at(0);
+                if (rhs.display_preset && rhs.display_preset->config.has("filament_type"))
+                    type_r = rhs.display_preset->config.option<ConfigOptionStrings>("filament_type")->values.at(0);
+
+                auto type_order_l = std::find(first_types.begin(), first_types.end(), type_l);
+                auto type_order_r = std::find(first_types.begin(), first_types.end(), type_r);
+                if (type_order_l != type_order_r)
+                    return type_order_l < type_order_r;
+
+                return lhs.alias < rhs.alias;
+            });
+        };
+
+        sort_rows(project_rows);
+        sort_rows(user_rows);
+        sort_rows(system_rows);
+        sort_rows(unsupported_rows);
+
+        bool selected_in_ams = false;
+        set_replace_text("Bambu", "BambuStudioBlack");
+        selected_in_ams = add_ams_filaments(selected_exact_name, true);
+
+        wxString tooltip;
+        auto append_rows = [&](const std::vector<FilamentRowView> &rows, const wxString &header, const wxString &group_name, bool disabled) {
+            if (rows.empty())
+                return;
+
+            set_label_marker(Append(header, wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
+            for (const FilamentRowView &row : rows) {
+                wxBitmap *bmp = row.display_preset ? get_bmp(*row.display_preset) : get_bmp("spool", false, m_main_bitmap_name);
+                int index = Append(from_u8(row.display_label), *bmp, group_name, nullptr, disabled ? DD_ITEM_STYLE_DISABLED : 0);
+                if (disabled)
+                    set_label_marker(index, LABEL_ITEM_DISABLED);
+                SetItemTooltip(index, from_u8(row.tooltip));
+                m_filament_rows[index] = { row.exact_preset_name, row.tooltip, false };
+                if (row.is_selected) {
+                    validate_selection(true);
+                    tooltip = from_u8(row.tooltip);
+                    if (selected_in_ams)
+                        SetFlag(index, (int) FilamentAMSType::FROM_AMS);
+                }
+            }
+        };
+
+        append_rows(project_rows, _L("Project-inside presets"), _L("Project") + " ", false);
+        append_rows(user_rows, _L("User presets"), _L("Custom") + " ", false);
+        append_rows(system_rows, _L("System presets"), _L("System"), false);
+
+        if (!selected_alias.empty()) {
+            std::vector<std::string> variants = m_preset_bundle->get_filament_preset_names_by_alias_for_current_printer(selected_alias, false);
+            std::sort(variants.begin(), variants.end(), [&](const std::string &lhs, const std::string &rhs) {
+                return m_preset_bundle->get_filament_preset_nozzle_label(lhs) < m_preset_bundle->get_filament_preset_nozzle_label(rhs);
+            });
+            if (variants.size() > 1) {
+                set_label_marker(Append(_L("Versions"), wxNullBitmap, DD_ITEM_STYLE_SPLIT_ITEM));
+                for (const std::string &variant_name : variants) {
+                    const Preset *variant_preset = m_collection->find_preset(variant_name, false);
+                    if (variant_preset == nullptr)
+                        continue;
+                    std::string variant_nozzle = m_preset_bundle->get_filament_preset_nozzle_label(variant_name);
+                    if (variant_nozzle.empty())
+                        continue;
+                    wxBitmap *bmp = get_bmp(*variant_preset);
+                    std::string variant_tooltip = variant_name;
+                    if (!m_preset_bundle->filament_preset_matches_slot_nozzle(variant_name, m_filament_idx, filament_maps))
+                        variant_tooltip += " (manual override)";
+                    int index = Append(from_u8("  Use " + variant_nozzle + " profile"), *bmp, _L("Versions"), nullptr, 0);
+                    SetItemTooltip(index, from_u8(variant_tooltip));
+                    m_filament_rows[index] = { variant_name, variant_tooltip, true };
+                }
+            }
+        }
+
+        append_rows(unsupported_rows, _L("Unsupported presets"), _L("Unsupported") + " ", true);
+
+        wxBitmap *bmp = get_bmp("edit_preset_list", selected_filament_preset && !selected_filament_preset->is_compatible, "edit_uni");
+        set_label_marker(Append(separator(L("Add/Remove filaments")), *bmp), LABEL_ITEM_WIZARD_FILAMENTS);
+
+        update_selection();
+        if (wxGetApp().plater()->is_same_printer_for_connected_and_selected(false))
+            update_badge_according_flag();
+        Thaw();
+
+        if (!tooltip.IsEmpty()) {
+#ifdef __WXMSW__
+            SetToolTip(NULL);
+#endif
+            SetToolTip(tooltip);
+        }
+        return;
     }
 
     bool has_selection = m_collection->get_selected_idx() != size_t(-1);

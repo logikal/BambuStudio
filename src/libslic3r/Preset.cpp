@@ -23,6 +23,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <iomanip>
 #include <stdexcept>
 #include <unordered_map>
 #include <boost/format.hpp>
@@ -705,6 +706,43 @@ bool is_compatible_with_parent_printer(const PresetWithVendorProfile& preset, co
                compatible_printers->values.end();
 }
 
+static bool is_compatible_with_active_nozzle_mix(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_printer)
+{
+    if (preset.preset.type != Preset::TYPE_FILAMENT)
+        return false;
+
+    const auto *compatible_printers = dynamic_cast<const ConfigOptionStrings *>(preset.preset.config.option("compatible_printers"));
+    if (compatible_printers == nullptr || compatible_printers->values.empty())
+        return false;
+
+    const auto *nozzle_diameters = dynamic_cast<const ConfigOptionFloatsNullable *>(active_printer.preset.config.option("nozzle_diameter"));
+    if (nozzle_diameters == nullptr || nozzle_diameters->values.size() <= 1)
+        return false;
+
+    const std::string printer_model = active_printer.preset.config.opt_string("printer_model");
+    if (printer_model.empty())
+        return false;
+
+    std::vector<std::string> active_nozzle_labels;
+    active_nozzle_labels.reserve(nozzle_diameters->values.size());
+    for (double diameter : nozzle_diameters->values) {
+        std::ostringstream nozzle_stream;
+        nozzle_stream << std::fixed << std::setprecision(1) << diameter;
+        active_nozzle_labels.emplace_back(nozzle_stream.str() + " nozzle");
+    }
+
+    for (const std::string &compatible_printer_name : compatible_printers->values) {
+        if (!boost::contains(compatible_printer_name, printer_model))
+            continue;
+        for (const std::string &nozzle_label : active_nozzle_labels) {
+            if (boost::contains(compatible_printer_name, nozzle_label))
+                return true;
+        }
+    }
+
+    return false;
+}
+
 bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_printer, const DynamicPrintConfig *extra_config)
 {
 	if (preset.vendor != nullptr && preset.vendor != active_printer.vendor)
@@ -726,7 +764,8 @@ bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const Pre
         std::find(compatible_printers->values.begin(), compatible_printers->values.end(), active_printer.preset.name) !=
         compatible_printers->values.end()
         //BBS
-        || (!active_printer.preset.is_system && is_compatible_with_parent_printer(preset, active_printer));
+        || (!active_printer.preset.is_system && is_compatible_with_parent_printer(preset, active_printer))
+        || is_compatible_with_active_nozzle_mix(preset, active_printer);
 }
 
 bool is_compatible_with_printer(const PresetWithVendorProfile &preset, const PresetWithVendorProfile &active_printer)
@@ -966,8 +1005,11 @@ static std::vector<std::string> s_Preset_print_options {
     "support_interface_pattern", "support_interface_spacing", "support_interface_loop_pattern",
     "support_top_z_distance", "support_on_build_plate_only","support_critical_regions_only", "support_remove_small_overhang",
     "bridge_no_support", "thick_bridges", "max_bridge_length", "print_sequence",
-    "filename_format", "wall_filament", "support_bottom_z_distance",
-    "sparse_infill_filament", "solid_infill_filament", "support_filament", "support_interface_filament","support_interface_not_for_body",
+    "filename_format", "wall_filament", "wall_process_mode", "wall_process_preset_alias", "wall_process_preset_name", "support_bottom_z_distance",
+    "sparse_infill_filament", "sparse_infill_process_mode", "sparse_infill_process_preset_alias", "sparse_infill_process_preset_name",
+    "solid_infill_filament", "solid_infill_process_mode", "solid_infill_process_preset_alias", "solid_infill_process_preset_name",
+    "support_filament", "support_process_mode", "support_process_preset_alias", "support_process_preset_name",
+    "support_interface_filament", "support_interface_process_mode", "support_interface_process_preset_alias", "support_interface_process_preset_name", "support_interface_not_for_body",
     "ooze_prevention", "standby_temperature_delta", "interface_shells", "line_width", "initial_layer_line_width", "inner_wall_line_width",
     "outer_wall_line_width", "sparse_infill_line_width", "internal_solid_infill_line_width",
     "skin_infill_line_width","skeleton_infill_line_width",
