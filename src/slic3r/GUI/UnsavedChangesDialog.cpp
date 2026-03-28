@@ -891,8 +891,7 @@ void UnsavedChangesDialog::build(Preset::Type type, PresetCollection *dependent_
         dependent_presets = nullptr;
     }
 
-    if (params || (dependent_presets &&
-        ((dependent_presets->type() != Preset::Type::TYPE_FILAMENT && dependent_presets->type() != Preset::Type::TYPE_PRINTER) || !dependent_presets->find_preset(new_selected_preset)))) {
+    if (params || (dependent_presets && dependent_presets->type() != Preset::Type::TYPE_PRINTER)) {
         m_panel_tab = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxSize(UNSAVE_CHANGE_DIALOG_SCROLL_WINDOW_SIZE.x, -1), wxTAB_TRAVERSAL);
         m_panel_tab->SetBackgroundColour(GREY200);
         wxBoxSizer *m_sizer_tab = new wxBoxSizer(wxVERTICAL);
@@ -1035,24 +1034,34 @@ void UnsavedChangesDialog::build(Preset::Type type, PresetCollection *dependent_
 
     bool is_copy = new_selected_preset == "SyncExtruderParams";
     // "Save" button
-    if (ActionButtons::SAVE & m_buttons) add_btn(&m_save_btn, m_save_btn_id, is_copy ? Action::Transfer : Action::Save, is_copy ? _L("Yes") : _L("Save"), true);
+    if (ActionButtons::SAVE & m_buttons) {
+        wxString save_label;
+        if (is_copy) {
+            save_label = _L("Yes");
+        } else if (dependent_presets && dependent_presets->type() != Preset::Type::TYPE_PRINTER) {
+            save_label = format_wxstr(_L("Save modifications to \"%1%\""), dependent_presets->get_edited_preset().name);
+        } else {
+            save_label = _L("Save");
+        }
+        add_btn(&m_save_btn, m_save_btn_id, is_copy ? Action::Transfer : Action::Save, save_label, true);
+    }
 
     { // "Don't save" / "Discard" button
         std::string btn_icon  = (ActionButtons::DONT_SAVE & m_buttons) ? "" : (dependent_presets || (ActionButtons::KEEP & m_buttons)) ? "blank_16" : "exit";
-        wxString    btn_label = (ActionButtons::TRANSFER & m_buttons) ? _L("Discard Modified Value") : is_copy ? _L("No") : _L("Don't save");
+        wxString    btn_label = (ActionButtons::TRANSFER & m_buttons) ? _L("Discard Unsaved Changes") : is_copy ? _L("No") : _L("Don't save");
         add_btn(&m_discard_btn, m_continue_btn_id, Action::Discard, btn_label, false);
     }
 
-    // "Transfer" / "Keep" button
+    // "Transfer" button
     if (ActionButtons::TRANSFER & m_buttons) {
         const PresetCollection* switched_presets = type == Preset::TYPE_INVALID ? nullptr : wxGetApp().get_tab(type)->get_presets();
         if (dependent_presets && switched_presets && (type == dependent_presets->type() ?
             dependent_presets->get_edited_preset().printer_technology() == dependent_presets->find_preset(new_selected_preset)->printer_technology() :
             switched_presets->get_edited_preset().printer_technology() == switched_presets->find_preset(new_selected_preset)->printer_technology()))
-            add_btn(&m_transfer_btn, m_move_btn_id, Action::Transfer, /*switched_presets->get_edited_preset().name == new_selected_preset ? */_L("Use Modified Value"), true);
+            add_btn(&m_transfer_btn, m_move_btn_id, Action::Transfer, _L("Transfer unsaved modifications to new preset"), true);
     }
     if (!m_transfer_btn && (ActionButtons::KEEP & m_buttons))
-        add_btn(&m_transfer_btn, m_move_btn_id, Action::Transfer, _L("Use Modified Value"), true);
+        add_btn(&m_transfer_btn, m_move_btn_id, Action::Transfer, _L("Transfer unsaved modifications to new preset"), true);
 
     /* ScalableButton *cancel_btn = new ScalableButton(this, wxID_CANCEL, "cross", _L("Cancel"), wxDefaultSize, wxDefaultPosition, wxBORDER_DEFAULT, true, 24);
       buttons->Add(cancel_btn, 1, wxLEFT | wxRIGHT, 5);
@@ -1479,15 +1488,19 @@ void UnsavedChangesDialog::update(Preset::Type type, PresetCollection* dependent
     wxString action_msg;
 
     if (dependent_presets) {
-        action_msg = format_wxstr(_L("You have changed the preset \"%1%\". "), dependent_presets->get_edited_preset().name);
-        if (m_transfer_btn) {
-            action_msg += _L("\nDo you want to use the modified value in the new preset that you selected?");
+        if (dependent_presets->type() == Preset::Type::TYPE_PRINTER) {
+            // For printer presets (no change list shown)
+            action_msg = format_wxstr(_L("You have unsaved changes to \"%1%\". Do you want to save those changes before switching to \"%2%\"?"),
+                                    dependent_presets->get_edited_preset().name, new_selected_preset);
+        } else {
+            // For filament and print presets (change list shown)
+            action_msg = format_wxstr(_L("You have unsaved modifications to the current preset \"%1%\". "), dependent_presets->get_edited_preset().name);
+            action_msg += _L("\nWhat would you like to do with those modifications?");
         }
     } else {
-        action_msg = _L("You have changed the preset. ");
+        action_msg = _L("You have unsaved changes to the current preset. ");
+        action_msg += _L("\nDo you want to save those changes?");
     }
-    if (!m_transfer_btn)
-        action_msg += _L("\nDo you want to save the modified values?");
 
     m_action_line->SetLabel(action_msg);
 
